@@ -1,6 +1,6 @@
 /** A free-roaming, draggable desktop pet with regional-persona dialect quips. */
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 import type { PropsLocale, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 import type {} from '@deepseek-ai/dsh-client-ui-layout/client'
 import type {} from '@deepseek-ai/dsh-client-runtime/client'
@@ -126,8 +126,38 @@ function randomPersonaId(except?: PersonaId): PersonaId {
 /** Idle span before the pet proactively speaks up (nudges the user). */
 const IDLE_PROMPT_MS = 45_000
 
+/** Running longer than this counts as a "slow turn" for pet prompts. */
+const SLOW_TURN_MS = 20_000
+
 /** How often to re-check whether it's late-night and the user is still working. */
 const LATE_NIGHT_CHECK_MS = 5 * 60_000
+const PHOTO_PAN_BASE_MS = 30_000
+const PHOTO_PAN_PX_MS = 190
+const PHOTO_ZOOM_NEAR = 1.1
+const PHOTO_ZOOM_FAR = 1.03
+
+type PromptStage = 'ready' | 'resume' | 'running' | 'slow' | 'error' | 'crash' | 'completed_first' | 'completed_followup' | 'idle'
+
+function hasConversationHistory(peek: ConversationPeek | null): boolean {
+  if (peek === null) return false
+  return peek.replyText !== null || peek.error !== null || peek.tokens > 0
+}
+
+function sceneForPromptStage(stage: PromptStage): Scene {
+  switch (stage) {
+    case 'resume': return 'resume'
+    case 'running': return 'thinking'
+    case 'slow': return 'slow'
+    case 'error': return 'error'
+    case 'crash': return 'crash'
+    case 'completed_followup': return 'followup'
+    case 'completed_first': return 'replied'
+    case 'idle': return 'idle'
+    case 'ready':
+    default:
+      return 'hello'
+  }
+}
 
 /** Play a short two-note "done" chime via WebAudio (no asset files needed). */
 function playChime(): void {
@@ -278,6 +308,7 @@ export function PetPanel({ t, useSessions }: PetPanelProps) {
   const [sessionsOpen, setSessionsOpen] = useState(false)
   const [hovered, setHovered] = useState(false)
   const [hatching, setHatching] = useState(false)
+  const [promptStage, setPromptStage] = useState<PromptStage>('ready')
   // Position in px from the left/top of the viewport, plus facing direction.
   const [pos, setPos] = useState<{ x: number; y: number }>(() => ({ x: 120, y: 320 }))
   const [facing, setFacing] = useState<1 | -1>(1)
@@ -292,10 +323,92 @@ export function PetPanel({ t, useSessions }: PetPanelProps) {
   const roamTimer = useRef<ReturnType<typeof setInterval> | null>(null)
   const fileInput = useRef<HTMLInputElement | null>(null)
   const bgInput = useRef<HTMLInputElement | null>(null)
+  const cardRef = useRef<HTMLDivElement | null>(null)
+  const photoLayerRef = useRef<HTMLDivElement | null>(null)
   // Drag bookkeeping: pointer origin, pet origin, and whether it became a drag.
   const drag = useRef<{ px: number; py: number; ox: number; oy: number; moved: boolean } | null>(null)
+  const [photoNatural, setPhotoNatural] = useState<{ width: number; height: number } | null>(null)
+  const [cardSize, setCardSize] = useState<{ width: number; height: number }>({ width: 0, height: 0 })
 
   useEffect(() => { savePet(pet) }, [pet])
+
+  useEffect(() => {
+    if (pet?.background === undefined) {
+      setPhotoNatural(null)
+      return
+    }
+    let disposed = false
+    const image = new Image()
+    image.onload = () => {
+      if (disposed) return
+      const width = image.naturalWidth || image.width
+      const height = image.naturalHeight || image.height
+      if (width > 0 && height > 0) setPhotoNatural({ width, height })
+    }
+    image.onerror = () => {
+      if (!disposed) setPhotoNatural(null)
+    }
+    image.src = pet.background
+    return () => { disposed = true }
+  }, [pet?.background])
+
+  useEffect(() => {
+    const node = cardRef.current
+    if (node === null || pet?.background === undefined) {
+      setCardSize({ width: 0, height: 0 })
+      return
+    }
+    const updateSize = () => {
+      const next = {
+        width: Math.round(node.clientWidth),
+        height: Math.round(node.clientHeight),
+      }
+      setCardSize(prev => (prev.width === next.width && prev.height === next.height ? prev : next))
+    }
+    updateSize()
+    const observer = new ResizeObserver(updateSize)
+    observer.observe(node)
+    return () => observer.disconnect()
+  }, [pet?.background])
+
+  useEffect(() => {
+    const layer = photoLayerRef.current
+    if (layer === null) return
+    layer.getAnimations().forEach(animation => animation.cancel())
+    layer.style.backgroundPosition = '50% 50%'
+    if (pet?.background === undefined || photoNatural === null || cardSize.width <= 0 || cardSize.height <= 0) return
+    const coverScale = Math.max(cardSize.width / photoNatural.width, cardSize.height / photoNatural.height)
+    const coverWidth = photoNatural.width * coverScale
+    const coverHeight = photoNatural.height * coverScale
+    const farWidth = coverWidth * PHOTO_ZOOM_FAR
+    const farHeight = coverHeight * PHOTO_ZOOM_FAR
+    const nearWidth = coverWidth * PHOTO_ZOOM_NEAR
+    const nearHeight = coverHeight * PHOTO_ZOOM_NEAR
+    const moveX = Math.max(0, Math.floor((nearWidth - cardSize.width) / 2 - 2))
+    const moveY = Math.max(0, Math.floor((nearHeight - cardSize.height) / 2 - 2))
+    const startX = moveX > 0 ? `calc(50% - ${moveX}px)` : '50%'
+    const endX = moveX > 0 ? `calc(50% + ${moveX}px)` : '50%'
+    const startY = moveY > 0 ? `calc(50% - ${moveY}px)` : '50%'
+    const endY = moveY > 0 ? `calc(50% + ${moveY}px)` : '50%'
+    const distance = (moveX * 4) + (moveY * 4)
+    const duration = Math.max(PHOTO_PAN_BASE_MS, Math.round(distance * PHOTO_PAN_PX_MS))
+    const farSize = `${Math.round(farWidth)}px ${Math.round(farHeight)}px`
+    const nearSize = `${Math.round(nearWidth)}px ${Math.round(nearHeight)}px`
+    const animation = layer.animate([
+      { backgroundPosition: '50% 50%', backgroundSize: farSize, offset: 0 },
+      { backgroundPosition: '50% 50%', backgroundSize: nearSize, offset: 0.14 },
+      { backgroundPosition: `${startX} ${startY}`, backgroundSize: nearSize, offset: 0.32 },
+      { backgroundPosition: `${endX} ${startY}`, backgroundSize: nearSize, offset: 0.5 },
+      { backgroundPosition: `${endX} ${endY}`, backgroundSize: nearSize, offset: 0.68 },
+      { backgroundPosition: `${startX} ${endY}`, backgroundSize: nearSize, offset: 0.86 },
+      { backgroundPosition: '50% 50%', backgroundSize: farSize, offset: 1 },
+    ], {
+      duration,
+      iterations: Number.POSITIVE_INFINITY,
+      easing: 'cubic-bezier(0.38, 0.02, 0.2, 1)',
+    })
+    return () => animation.cancel()
+  }, [pet?.background, photoNatural, cardSize])
 
   const persona = PERSONAS[pet?.persona ?? DEFAULT_PERSONA] ?? PERSONAS[DEFAULT_PERSONA]
 
@@ -311,6 +424,10 @@ export function PetPanel({ t, useSessions }: PetPanelProps) {
   const festivalShown = useRef<string | null>(null)
   // Tracks the running edge so the "done" chime fires once per finished turn.
   const wasRunning = useRef(false)
+  const slowTurnTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const trackedSessionId = useRef<string | null>(null)
+  const turnReplyBaseline = useRef<string | null>(null)
+  const turnHadHistory = useRef(false)
 
   /** Nudge the bond score, clamped to [0, 100]. */
   const bumpAffinity = useCallback((delta: number) => {
@@ -361,26 +478,66 @@ export function PetPanel({ t, useSessions }: PetPanelProps) {
     }, EXCITED_MS)
   }, [])
 
-  // Announce a reply + ring the done chime ONCE when a whole turn finishes,
-  // i.e. when the live conversation goes from running -> not running. This
-  // avoids chiming on every streamed chunk or intermediate tool step.
+  const clearSlowTurnTimer = useCallback(() => {
+    if (slowTurnTimer.current !== null) {
+      clearTimeout(slowTurnTimer.current)
+      slowTurnTimer.current = null
+    }
+  }, [])
+
+  const armSlowTurnTimer = useCallback(() => {
+    clearSlowTurnTimer()
+    slowTurnTimer.current = setTimeout(() => {
+      setPromptStage(current => (current === 'running' ? 'slow' : current))
+      slowTurnTimer.current = null
+    }, SLOW_TURN_MS)
+  }, [clearSlowTurnTimer])
+
+  // Track conversation lifecycle as a small state machine so the pet prompt
+  // only changes on meaningful milestones instead of every streaming tick.
   useEffect(() => {
     if (firstActivity.current) {
       firstActivity.current = false
+      trackedSessionId.current = peek === null ? null : String(peek.sessionId)
       wasRunning.current = peek?.running === true
+      turnReplyBaseline.current = peek?.replyText ?? null
+      setPromptStage(peek?.running === true ? 'running' : hasConversationHistory(peek) ? 'resume' : 'ready')
+      if (peek?.running === true) armSlowTurnTimer()
       return
     }
     if (pet === null) return
+
+    const nextSessionId = peek === null ? null : String(peek.sessionId)
+    if (trackedSessionId.current !== nextSessionId) {
+      trackedSessionId.current = nextSessionId
+      wasRunning.current = peek?.running === true
+      turnReplyBaseline.current = peek?.replyText ?? null
+      clearSlowTurnTimer()
+      setPromptStage(peek?.running === true ? 'running' : hasConversationHistory(peek) ? 'resume' : 'ready')
+      if (peek?.running === true) armSlowTurnTimer()
+      return
+    }
+
     const running = peek?.running === true
+    if (!wasRunning.current && running) {
+      turnReplyBaseline.current = peek?.replyText ?? null
+      turnHadHistory.current = hasConversationHistory(peek)
+      setPromptStage('running')
+      armSlowTurnTimer()
+    }
     if (wasRunning.current && !running) {
-      // The turn just completed (and it wasn't an error) — celebrate once.
-      if (peek === null || peek.error === null) {
-        speak('replied')
+      clearSlowTurnTimer()
+      const replyText = peek?.replyText ?? null
+      const hasNewReply = replyText !== null && replyText !== turnReplyBaseline.current
+      if (peek?.error !== null) setPromptStage('error')
+      else if (hasNewReply) {
+        setPromptStage(turnHadHistory.current ? 'completed_followup' : 'completed_first')
         playChime()
       }
+      else setPromptStage('crash')
     }
     wasRunning.current = running
-  }, [peek, pet, speak])
+  }, [peek, pet, armSlowTurnTimer, clearSlowTurnTimer])
 
   // Proactively nudge the user after a stretch of silence (idle small-talk).
   // The timer resets on any activity, hover, or open menu; it fires only while
@@ -389,7 +546,10 @@ export function PetPanel({ t, useSessions }: PetPanelProps) {
     if (pet === null) return
     const busy = peek?.running === true
     if (busy || hovered || menuOpen || excited) return
-    const id = window.setTimeout(() => { speak('idle') }, IDLE_PROMPT_MS)
+    const id = window.setTimeout(() => {
+      setPromptStage('idle')
+      speak('idle')
+    }, IDLE_PROMPT_MS)
     return () => window.clearTimeout(id)
   }, [pet, peek?.running, activity, hovered, menuOpen, excited, speak])
 
@@ -450,7 +610,7 @@ export function PetPanel({ t, useSessions }: PetPanelProps) {
       const spentTokens = Math.max(0, tokens - previousTokens)
       let delta = spentTokens > 0 ? (spentTokens / 1000) * AFFINITY_PER_1K_TOKENS : 0
       if (errored && !wasErrored) delta -= AFFINITY_ON_ERROR
-      else if (!errored && !peek.running && peek.aiText !== null && spentTokens > 0) delta += AFFINITY_PER_REPLY
+      else if (!errored && !peek.running && peek.replyText !== null && spentTokens > 0) delta += AFFINITY_PER_REPLY
       if (spentTokens === 0 && delta === 0) return current
       const observedTokens = previousTokens >= tokens
         ? current.observedTokens
@@ -503,6 +663,7 @@ export function PetPanel({ t, useSessions }: PetPanelProps) {
   useEffect(() => () => {
     if (timer.current !== null) clearTimeout(timer.current)
     if (hatchTimer.current !== null) clearTimeout(hatchTimer.current)
+    if (slowTurnTimer.current !== null) clearTimeout(slowTurnTimer.current)
   }, [])
 
   // ---- Drag handlers: pointer down on the robot starts a potential drag. ----
@@ -707,32 +868,34 @@ export function PetPanel({ t, useSessions }: PetPanelProps) {
   // Real conversation info distilled from the live peek: the tool in flight,
   // the AI's actual reply/streaming text, or the real error message.
   const cardInfo = useMemo(() => {
-    if (peek === null) return null
+    if (peek === null) return promptStage === 'crash' ? t('info.crash') : null
     if (peek.error !== null) return t('info.error', { text: excerpt(peek.error, PEEK_ERROR_MAX) })
     if (peek.running) {
+      if (peek.partialText !== null) return t('info.streaming', { text: excerpt(peek.partialText) })
       return peek.toolName === null
         ? t('info.thinking')
         : t('info.tool', { name: peek.toolName })
     }
-    if (peek.aiText !== null) return t('info.replied', { text: excerpt(peek.aiText) })
+    if (promptStage === 'crash') return t('info.crash')
+    if (peek.replyText !== null) return t('info.replied', { text: excerpt(peek.replyText) })
     return null
-  }, [peek, t])
+  }, [peek, promptStage, t])
 
-  // Persona quip line: a transient cheer, else a scene-appropriate idle quip.
+  // Persona quip line: keep pet copy stable per lifecycle node, only letting
+  // transient celebrations/holiday lines temporarily override it.
   const cardQuip = useMemo(() => {
-    if (peek !== null) {
-      if (peek.error !== null) return pickQuip(pet?.persona ?? DEFAULT_PERSONA, 'error')
-      if (peek.running) return pickQuip(pet?.persona ?? DEFAULT_PERSONA, peek.toolName === null ? 'thinking' : 'analyzing')
-    }
-    return cheer ?? pickQuip(pet?.persona ?? DEFAULT_PERSONA, 'idle')
-  }, [peek, cheer, pet?.persona])
+    return cheer ?? pickQuip(pet?.persona ?? DEFAULT_PERSONA, sceneForPromptStage(promptStage))
+  }, [cheer, pet?.persona, promptStage])
 
-  const statusGlyph = peek !== null && peek.error !== null ? '⚠️' : busy ? '…' : '✓'
+  const statusGlyph = promptStage === 'error' || promptStage === 'crash' ? '⚠️' : busy ? '…' : '✓'
   const tokens = peek?.tokens ?? 0
   const tokenCredit = pet?.tokenCredit ?? 0
   const canSwitchPersona = tokenCredit >= TOKENS_PER_PERSONA
   const switchRemaining = Math.max(0, TOKENS_PER_PERSONA - tokenCredit)
   const switchProgress = Math.min(tokenCredit, TOKENS_PER_PERSONA)
+  const photoCardStyle = pet.background !== undefined
+    ? ({ '--pet-card-photo': `url(${pet.background})` } as CSSProperties)
+    : undefined
 
   // Theme variables from the adopted persona (accent colors + fallback face).
   const themeStyle = {
@@ -788,17 +951,10 @@ export function PetPanel({ t, useSessions }: PetPanelProps) {
       {/* Head info card: conversation excerpt + status + token "food" eaten.
           The uploaded background image (if any) is used as the card background. */}
       <div
+        ref={cardRef}
         className={pet.background !== undefined ? `${css.card} ${css.cardPhoto ?? ''}` : css.card}
-        style={
-         pet.background !== undefined
-            ? {
-                backgroundImage: `url(${pet.background})`,
-                backgroundSize: 'cover',
-                backgroundPosition: 'center',
-              }
-            : undefined
-        }
       >
+        {pet.background !== undefined && <div ref={photoLayerRef} className={css.cardPhotoLayer} style={photoCardStyle} aria-hidden />}
         <div className={css.cardContentRow}>
           <div className={pet.background !== undefined ? `${css.cardBody} ${css.cardBodyGlass ?? ''}` : css.cardBody}>
             <div className={css.cardTitle}>{pet.name}</div>

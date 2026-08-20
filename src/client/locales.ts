@@ -33,8 +33,10 @@ export const zh = {
   // Live conversation info (real state, not just quips).
   'info.tool': '🔧 正在执行 {name}',
   'info.thinking': '💭 正在思考…',
+  'info.streaming': '💬 {text}',
   'info.replied': '💬 {text}',
   'info.error': '⚠️ 出错：{text}',
+  'info.crash': '⚠️ 本轮对话中断了，请重试',
   // Persona display names.
   'persona.dongbei.name': '虎威威',
   'persona.chuanyu.name': '龙火火',
@@ -105,8 +107,10 @@ export const en = {
   'status.sessions': '💬 {count} chats',
   'info.tool': '🔧 Running {name}',
   'info.thinking': '💭 Thinking…',
+  'info.streaming': '💬 {text}',
   'info.replied': '💬 {text}',
   'info.error': '⚠️ Error: {text}',
+  'info.crash': '⚠️ This turn stopped unexpectedly. Try again.',
   'persona.dongbei.name': 'Tiger',
   'persona.chuanyu.name': 'Dragon',
   'persona.tianjin.name': 'Kitty',

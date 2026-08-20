@@ -50,6 +50,8 @@
   align-items: center;
   gap: 12px;
   flex: 1 1 auto;
+  position: relative;
+  z-index: 1;
 }
 
 /* Small pointer triangle from the card toward the robot below. */
@@ -79,8 +81,29 @@
 .cardPhoto {
   background: transparent;
 }
+
+.cardPhotoLayer {
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background-image:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.08) 0%, rgba(255, 255, 255, 0.18) 100%),
+    var(--pet-card-photo);
+  background-size: cover;
+  background-position: center;
+  background-repeat: no-repeat;
+  filter: saturate(1.02) contrast(0.96) brightness(0.92);
+  pointer-events: none;
+}
+
 .cardPhoto::after {
   background: rgba(255, 255, 255, 0.72);
+}
+
+.cardPhoto .cardBodyGlass {
+  background: rgba(255, 255, 255, 0.78);
+  border: 1px solid rgba(255, 255, 255, 0.34);
+  box-shadow: 0 4px 14px rgba(24, 39, 75, 0.16);
 }
 
 /* Frosted-glass text panel: keeps text readable while the photo stays visible behind it. */
@@ -159,6 +182,8 @@
   gap: 8px;
   margin-top: 0;
   flex-shrink: 0;
+  position: relative;
+  z-index: 1;
 }
 
 .cardMeta .food { margin-top: 0; }

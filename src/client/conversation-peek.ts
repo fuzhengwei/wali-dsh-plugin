@@ -25,6 +25,10 @@ export interface ConversationPeek {
   readonly running: boolean
   /** The first in-flight tool name, when a tool call is running. */
   readonly toolName: string | null
+  /** Streaming partial text for the in-flight turn, when available. */
+  readonly partialText: string | null
+  /** The last finalized assistant reply text in this conversation. */
+  readonly replyText: string | null
   /** The latest AI text — streaming partial first, else the last finalized reply. */
   readonly aiText: string | null
   /** The most recent agent error, when the last turn failed. */
@@ -87,11 +91,14 @@ function lastAssistantText(snapshot: ConversationSnapshot): string | null {
 /** Collapse a full ConversationSnapshot into the pet's compact peek. */
 function toPeek(sessionId: SessionId, snapshot: ConversationSnapshot): ConversationPeek {
   const partialText = snapshot.partial === null ? null : firstText(snapshot.partial.blocks)
+  const replyText = lastAssistantText(snapshot)
   return {
     sessionId,
     running: snapshot.running,
     toolName: snapshot.runningCalls[0]?.name ?? null,
-    aiText: partialText ?? lastAssistantText(snapshot),
+    partialText,
+    replyText,
+    aiText: partialText ?? replyText,
     error: snapshot.lastAgentError,
     tokens: totalTokens(snapshot),
   }

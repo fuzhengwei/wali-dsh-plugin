@@ -32,7 +32,23 @@
   },
   "scripts": {
     "bundle": "tsdown",
-    "watch": "tsdown --watch"
+    "watch": "tsdown --watch",
+    "prepublishOnly": "pnpm run bundle"
+  },
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "deepseek-harness",
+    "desktop-pet",
+    "web-ui"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/fuzhengwei/wali-dsh-plugin.git"
+  },
+  "homepage": "https://github.com/fuzhengwei/wali-dsh-plugin#readme",
+  "bugs": {
+    "url": "https://github.com/fuzhengwei/wali-dsh-plugin/issues"
   },
   "license": "MIT",
   "peerDependencies": {
