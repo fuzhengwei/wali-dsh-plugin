@@ -137,6 +137,26 @@ const SHAPE_EMOJI: Readonly<Record<PetShape, string>> = {
   fish: '🐟',
   ox: '🐮',
   robot: '🤖',
+  mario: '🍄',
+  wukong: '🐵',
+  nezha: '🔥',
+  niudemon: '🐂',
+  redboy: '👹',
+  tang: '🧑‍🦲',
+  pikachu: '⚡',
+  baymax: '🤍',
+  minion: '🟡',
+  spongebob: '🧽',
+  simba: '🦁',
+  po: '🐼',
+  tom: '🐱',
+  jerry: '🐭',
+  mickey: '🐭',
+  donald: '🦆',
+  doraemon: '🤖',
+  goku: '🔥',
+  shinchan: '👶',
+  conan: '🔍',
 }
 
 /** Per-shape skeleton decorations layered over the shared head/face/body rig.
@@ -192,6 +212,27 @@ function shapeParts(shape: PetShape): React.ReactNode {
     default:
       // The robot's antenna + glossy head are baked into the .head CSS itself.
       return null
+    case 'mario':
+    case 'wukong':
+    case 'nezha':
+    case 'niudemon':
+    case 'redboy':
+    case 'tang':
+    case 'pikachu':
+    case 'baymax':
+    case 'minion':
+    case 'spongebob':
+    case 'simba':
+    case 'po':
+    case 'tom':
+    case 'jerry':
+    case 'mickey':
+    case 'donald':
+    case 'doraemon':
+    case 'goku':
+    case 'shinchan':
+    case 'conan':
+      return null // These shapes have fully custom pixel-art bodies.
   }
 }
 
@@ -759,7 +800,8 @@ export function PetPanel({ t, useSessions }: PetPanelProps) {
 
       {/* The pet: a CSS-built skeleton (head + face + body + arms + legs) whose
           per-shape parts (ears, horns, shell, fins, …) give each form a distinct
-          silhouette. Robot keeps its antenna/terminal look; draggable. */}
+          silhouette. Robot keeps its antenna/terminal look; draggable.
+          Mario gets a fully custom 8-bit pixel-art body instead of the shared rig. */}
       <button
         type="button"
         className={`${css.robot} ${css[persona.shape] ?? ''} ${stateClass} ${walkClass}`}
@@ -775,27 +817,35 @@ export function PetPanel({ t, useSessions }: PetPanelProps) {
         onPointerMove={onPointerMove}
         onPointerUp={onPointerUp}
       >
-        {/* Head carries the per-shape decorations plus either the face or an avatar. */}
-        <span className={`${css.head} ${lowBond ? (css.blush ?? '') : ''}`} aria-hidden>
-          {shapeParts(persona.shape)}
-          {/* Un-flip so the face/avatar never renders mirrored while facing left. */}
-          <span className={css.faceUnflip} style={{ transform: `scaleX(${facing})` }}>
-            {pet.avatar !== undefined ? (
-              <img className={css.avatar} src={pet.avatar} alt="" />
-            ) : (
-              <span className={css.face}>
-                <span className={css.eye} />
-                <span className={css.eye} />
-                <span className={`${css.mouth} ${lowBond ? (css.mouthSad ?? '') : ''}`} />
-              </span>
-            )}
+        {['mario', 'wukong', 'nezha', 'niudemon', 'redboy', 'tang', 'pikachu', 'baymax', 'minion', 'spongebob', 'simba', 'po', 'tom', 'jerry', 'mickey', 'donald', 'doraemon', 'goku', 'shinchan', 'conan'].includes(persona.shape) ? (
+          <span className={css[`${persona.shape}Body`] as string} aria-hidden>
+            <span className={css[`${persona.shape}Pixel`] as string} />
           </span>
-        </span>
-        <span className={css.body} aria-hidden />
-        <span className={css.armLeft} aria-hidden />
-        <span className={css.armRight} aria-hidden />
-        <span className={css.legLeft} aria-hidden />
-        <span className={css.legRight} aria-hidden />
+        ) : (
+          <>
+            {/* Head carries the per-shape decorations plus either the face or an avatar. */}
+            <span className={`${css.head} ${lowBond ? (css.blush ?? '') : ''}`} aria-hidden>
+              {shapeParts(persona.shape)}
+              {/* Un-flip so the face/avatar never renders mirrored while facing left. */}
+              <span className={css.faceUnflip} style={{ transform: `scaleX(${facing})` }}>
+                {pet.avatar !== undefined ? (
+                  <img className={css.avatar} src={pet.avatar} alt="" />
+                ) : (
+                  <span className={css.face}>
+                    <span className={css.eye} />
+                    <span className={css.eye} />
+                    <span className={`${css.mouth} ${lowBond ? (css.mouthSad ?? '') : ''}`} />
+                  </span>
+                )}
+              </span>
+            </span>
+            <span className={css.body} aria-hidden />
+            <span className={css.armLeft} aria-hidden />
+            <span className={css.armRight} aria-hidden />
+            <span className={css.legLeft} aria-hidden />
+            <span className={css.legRight} aria-hidden />
+          </>
+        )}
       </button>
 
       <input
