@@ -544,7 +544,10 @@ export function PetPanel({ t, useSessions }: PetPanelProps) {
   }, [])
 
   const uploadAvatar = useCallback(() => {
-    fileInput.current?.click()
+    setMenuOpen(false)
+    // Defer the click to the next tick so the menu closure doesn't
+    // swallow the file dialog in some browsers.
+    requestAnimationFrame(() => fileInput.current?.click())
   }, [])
 
   const pickSession = useCallback((id: SessionRow['id']) => {

@@ -703,7 +703,16 @@
   filter: drop-shadow(0 16px 18px rgba(24, 39, 75, 0.4));
 }
 
-.hiddenInput { display: none; }
+/* Visually hidden but still clickable (display:none can block the native
+   file dialog in some browsers). Uses the sr-only pattern. */
+.hiddenInput {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
 
 .adoptBadge {
   font-size: 32px;
