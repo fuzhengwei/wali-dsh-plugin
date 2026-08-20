@@ -39,6 +39,8 @@ interface PetState {
   readonly persona: PersonaId
   /** Optional user-uploaded avatar (base64 data URL), shown rounded on the face. */
   readonly avatar?: string
+  /** Optional user-uploaded background image (base64 data URL), shown as card background. */
+  readonly background?: string
 }
 
 const STORAGE_KEY = 'dsh-ui-pet:state'
@@ -249,6 +251,7 @@ export function PetPanel({ t, useSessions }: PetPanelProps) {
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const roamTimer = useRef<ReturnType<typeof setInterval> | null>(null)
   const fileInput = useRef<HTMLInputElement | null>(null)
+  const bgInput = useRef<HTMLInputElement | null>(null)
   // Drag bookkeeping: pointer origin, pet origin, and whether it became a drag.
   const drag = useRef<{ px: number; py: number; ox: number; oy: number; moved: boolean } | null>(null)
 
@@ -515,24 +518,28 @@ export function PetPanel({ t, useSessions }: PetPanelProps) {
     setMenuOpen(false)
   }, [speakFor, t])
 
-  const onPickAvatar = useCallback((event: React.ChangeEvent<HTMLInputElement>) => {
+  /**
+   * Shared image-file picker: reads any image format, downscales if needed,
+   * and calls `onDone` with the final data URL. Supports JPEG/PNG/GIF/WebP/
+   * BMP/SVG/AVIF/ICO and any other format the browser can read.
+   */
+  const pickImage = useCallback((
+    event: React.ChangeEvent<HTMLInputElement>,
+    onDone: (dataUrl: string) => void,
+  ) => {
     const file = event.target.files?.[0]
     if (file === undefined) {
       event.target.value = ''
       return
     }
-    // Read as Data URL directly — works for ALL image formats the browser supports
-    // (JPEG, PNG, GIF, WebP, BMP, SVG, ICO, AVIF, etc.) without needing <Image> decoding.
     const reader = new FileReader()
     reader.onload = () => {
       const dataUrl = typeof reader.result === 'string' ? reader.result : null
       if (dataUrl === null) return
-      // If the data URL is small enough, use it as-is (preserves transparency, original format).
       if (dataUrl.length <= AVATAR_MAX_CHARS) {
-        setPet(current => (current === null ? current : { ...current, avatar: dataUrl }))
+        onDone(dataUrl)
         return
       }
-      // Too large: downscale via canvas, trying multiple formats.
       const image = new Image()
       image.onload = () => {
         let { width, height } = image
@@ -547,25 +554,19 @@ export function PetPanel({ t, useSessions }: PetPanelProps) {
         canvas.height = height
         const ctx = canvas.getContext('2d')
         if (ctx === null) {
-          // Canvas not available — try storing the raw data URL anyway.
-          setPet(current => (current === null ? current : { ...current, avatar: dataUrl }))
+          onDone(dataUrl)
           return
         }
         ctx.drawImage(image, 0, 0, width, height)
-        // Try PNG first (preserves transparency), then JPEG as fallback.
         let url = canvas.toDataURL('image/png')
+        if (url.length > AVATAR_MAX_CHARS) url = canvas.toDataURL('image/jpeg', 0.92)
         if (url.length > AVATAR_MAX_CHARS) {
-          url = canvas.toDataURL('image/jpeg', 0.92)
-        }
-        if (url.length > AVATAR_MAX_CHARS) {
-          // Still too large: progressively reduce quality.
           for (const q of [0.85, 0.75, 0.6, 0.45, 0.3]) {
             url = canvas.toDataURL('image/jpeg', q)
             if (url.length <= AVATAR_MAX_CHARS) break
           }
         }
         if (url.length > AVATAR_MAX_CHARS) {
-          // Last resort: scale down further.
           for (const factor of [0.75, 0.5, 0.35, 0.25]) {
             const w = Math.max(1, Math.round(width * factor))
             const h = Math.max(1, Math.round(height * factor))
@@ -576,32 +577,40 @@ export function PetPanel({ t, useSessions }: PetPanelProps) {
             if (url.length <= AVATAR_MAX_CHARS) break
           }
         }
-        if (url.length <= AVATAR_MAX_CHARS) {
-          setPet(current => (current === null ? current : { ...current, avatar: url }))
-        }
+        if (url.length <= AVATAR_MAX_CHARS) onDone(url)
       }
       image.onerror = () => {
-        // Browser can't decode the image — store the raw data URL if it fits.
-        if (dataUrl.length <= AVATAR_MAX_CHARS) {
-          setPet(current => (current === null ? current : { ...current, avatar: dataUrl }))
-        }
+        if (dataUrl.length <= AVATAR_MAX_CHARS) onDone(dataUrl)
       }
       image.src = dataUrl
     }
-    reader.onerror = () => {
-      // FileReader failed — silently ignore.
-    }
+    reader.onerror = () => { /* ignore */ }
     reader.readAsDataURL(file)
-    // Reset the input so the same file can be re-selected later.
     event.target.value = ''
-    setMenuOpen(false)
   }, [])
+
+  const onPickAvatar = useCallback((event: React.ChangeEvent<HTMLInputElement>) => {
+    pickImage(event, (dataUrl) => {
+      setPet(current => (current === null ? current : { ...current, avatar: dataUrl }))
+    })
+    setMenuOpen(false)
+  }, [pickImage])
+
+  const onPickBackground = useCallback((event: React.ChangeEvent<HTMLInputElement>) => {
+    pickImage(event, (dataUrl) => {
+      setPet(current => (current === null ? current : { ...current, background: dataUrl }))
+    })
+    setMenuOpen(false)
+  }, [pickImage])
 
   const uploadAvatar = useCallback(() => {
     setMenuOpen(false)
-    // Defer the click to the next tick so the menu closure doesn't
-    // swallow the file dialog in some browsers.
     requestAnimationFrame(() => fileInput.current?.click())
+  }, [])
+
+  const uploadBackground = useCallback(() => {
+    setMenuOpen(false)
+    requestAnimationFrame(() => bgInput.current?.click())
   }, [])
 
   const pickSession = useCallback((id: SessionRow['id']) => {
@@ -682,21 +691,21 @@ export function PetPanel({ t, useSessions }: PetPanelProps) {
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
     >
-      {/* Head info card: conversation excerpt + status + token "food" eaten. */}
-      {/* The uploaded image (if any) is used as the card background, with a translucent overlay so text stays readable. */}
+      {/* Head info card: conversation excerpt + status + token "food" eaten.
+          The uploaded background image (if any) is used as the card background. */}
       <div
-        className={pet.avatar !== undefined ? `${css.card} ${css.cardPhoto ?? ''}` : css.card}
+        className={pet.background !== undefined ? `${css.card} ${css.cardPhoto ?? ''}` : css.card}
         style={
-         pet.avatar !== undefined
+         pet.background !== undefined
             ? {
-                backgroundImage: `url(${pet.avatar})`,
+                backgroundImage: `url(${pet.background})`,
                 backgroundSize: 'cover',
                 backgroundPosition: 'center',
               }
             : undefined
         }
       >
-        <div className={pet.avatar !== undefined ? `${css.cardBody} ${css.cardBodyGlass ?? ''}` : css.cardBody}>
+        <div className={pet.background !== undefined ? `${css.cardBody} ${css.cardBodyGlass ?? ''}` : css.cardBody}>
           <div className={css.cardTitle}>{pet.name}</div>
           {cardInfo !== null && <div className={css.cardText}>{cardInfo}</div>}
           <div className={css.cardQuip}>{cardQuip}</div>
@@ -785,10 +794,19 @@ export function PetPanel({ t, useSessions }: PetPanelProps) {
         onChange={onPickAvatar}
       />
 
+      <input
+        ref={bgInput}
+        type="file"
+        accept="image/*"
+        className={css.hiddenInput}
+        onChange={onPickBackground}
+      />
+
       {menuOpen && (
         <div className={css.menu}>
           <div className={css.menuName}>{pet.name} · {t('status.level', { level: pet.affinity })}</div>
           <button type="button" className={css.menuItem} onClick={uploadAvatar}>{t('panel.avatar')}</button>
+          <button type="button" className={css.menuItem} onClick={uploadBackground}>{t('panel.background')}</button>
           <button type="button" className={css.menuItem} onClick={switchPersona}>{t('panel.persona')}</button>
           <button type="button" className={css.menuItem} onClick={rename}>{t('panel.rename')}</button>
         </div>
