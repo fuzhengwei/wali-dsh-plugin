@@ -19,3 +19,7 @@ npm-debug.log*
 
 # TypeScript build info
 *.tsbuildinfo
+
+# Local publish/cache artifacts
+.npm-cache/
+*.tgz

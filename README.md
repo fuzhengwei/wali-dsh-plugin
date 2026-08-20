@@ -1,23 +1,31 @@
 # wali-dsh-plugin
 
-A DSH UI plugin that adds a free-roaming desktop pet overlay to the whole web interface.
+A DSH web UI plugin that adds a free-roaming desktop pet overlay to the full application interface.
 
-## What this package provides
+## Overview
 
-- A publishable npm package for DSH plugin installation
-- A client-side overlay injected through `dsh.client`
-- Automatic bundle patch registration via `cordis.patch.yml`
-- Zero source-tree changes required in the host app
+`wali-dsh-plugin` injects a browser-side companion into the DSH client runtime. The pet floats above the workspace, reacts to conversation context, and works without modifying the host source tree.
+
+## Features
+
+- Free-roaming pet overlay across the full DSH web UI
+- Conversation-aware persona reactions and status display
+- Installed as a standard DSH plugin package
+- Published to npm for direct install or market catalog integration
 
 ## Install
 
-After this package is published to npm, end users can install it with one command:
+Install from npm through the DSH plugin command:
 
 ```bash
 dsh plugin --profile <profile-name> add wali-dsh-plugin
 ```
 
-If the target environment already exposes a plugin market UI, the same npm package can be wired into that catalog for one-click installation.
+Example:
+
+```bash
+dsh plugin --profile web add wali-dsh-plugin
+```
 
 ## Uninstall
 
@@ -25,73 +33,60 @@ If the target environment already exposes a plugin market UI, the same npm packa
 dsh plugin --profile <profile-name> remove wali-dsh-plugin
 ```
 
+## Package Links
+
+- npm: `https://www.npmjs.com/package/wali-dsh-plugin`
+- repository: `https://github.com/fuzhengwei/wali-dsh-plugin`
+- issues: `https://github.com/fuzhengwei/wali-dsh-plugin/issues`
+
 ## Requirements
 
 - A DSH runtime that supports `dsh plugin --profile ... add`
 - A web profile with the client runtime packages available
-- Compatible peer dependencies listed in `package.json`
+- Peer dependency compatibility as declared in `package.json`
 
-## Local development
+## Local Development
 
 ```bash
 pnpm install
 pnpm run bundle
 ```
 
-## Publish to npm
-
-### 1. Prepare the package
+For iterative development:
 
 ```bash
-pnpm run bundle
-npm login
+pnpm run watch
 ```
 
-### 2. Publish the package
+## Publish
 
-```bash
-npm publish --access public
-```
+The package is published as a public npm module.
 
-### 3. Release an update later
+Release a new version with:
 
 ```bash
 npm version patch
 npm publish --access public
 ```
 
-Use `minor` or `major` instead of `patch` when the change level is higher.
+Use `minor` or `major` when appropriate. The `prepublishOnly` script rebuilds the package before publishing.
 
-## Make it available in a plugin market
+## Market Integration
 
-There are two common distribution layers:
+If you maintain a DSH plugin market or internal catalog, use the published npm package as the install target.
 
-### Option A: npm only
+- package: `wali-dsh-plugin`
+- install: `dsh plugin --profile <profile-name> add wali-dsh-plugin`
+- uninstall: `dsh plugin --profile <profile-name> remove wali-dsh-plugin`
 
-This is the base path and the one this repository is already structured for.
-Users install the package directly with the DSH plugin command.
-
-### Option B: plugin market catalog
-
-If your team or community maintains a plugin market/catalog, add this package entry there:
-
-- package name: `wali-dsh-plugin`
-- latest version: the published npm version
-- repository: `https://github.com/fuzhengwei/wali-dsh-plugin`
-- install command: `dsh plugin --profile <profile-name> add wali-dsh-plugin`
-- uninstall command: `dsh plugin --profile <profile-name> remove wali-dsh-plugin`
-
-That market layer is usually just a discoverability and one-click wrapper around the npm package.
-
-## Package structure
+## Project Structure
 
 - `package.json`: npm metadata, exports, DSH declarations
-- `cordis.patch.yml`: bundle patch injected during plugin add
+- `cordis.patch.yml`: bundle patch injected during plugin installation
 - `src/index.ts`: host-side plugin entry
 - `src/client/*`: browser-side overlay implementation
 
-## Notes for maintainers
+## Maintainer Notes
 
-- `prepublishOnly` rebuilds the package before publishing
-- Only files listed in `files` are shipped to npm
-- If you change the package name, update `cordis.patch.yml` so the inserted `name` stays identical to the published package name
+- Only files listed in `files` are published to npm
+- If you change the package name, keep `cordis.patch.yml` aligned with the published package name
