@@ -28,8 +28,8 @@
 .card {
   position: relative;
   display: flex;
-  align-items: stretch;
-  gap: 10px;
+  flex-direction: column;
+  gap: 6px;
   width: 320px;
   min-height: 180px;
   max-width: 320px;
@@ -141,13 +141,16 @@
   border: 1px solid rgba(217, 130, 43, 0.3);
 }
 
-/* Row under the card text holding the food pill + sessions toggle. */
+/* Row under the card text holding the food pill + sessions toggle.
+   Sits below the frosted-glass panel, on the card background directly. */
 .cardMeta {
   display: flex;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   align-items: center;
-  gap: 6px;
-  margin-top: 4px;
+  justify-content: flex-start;
+  gap: 8px;
+  margin-top: 0;
+  flex-shrink: 0;
 }
 
 .cardMeta .food { margin-top: 0; }
@@ -321,13 +324,16 @@
   flex: 0 0 24px;
   width: 24px;
   height: 24px;
-  align-self: center;
+  position: absolute;
+  top: 12px;
+  right: 12px;
   border-radius: 50%;
   font-size: 13px;
   line-height: 1;
   background: radial-gradient(circle at 35% 30%, #52d98c, #2fbf71);
   color: #fff;
   box-shadow: 0 2px 6px rgba(47, 191, 113, 0.4);
+  z-index: 1;
 }
 
 /* ---- The robot body ---- */

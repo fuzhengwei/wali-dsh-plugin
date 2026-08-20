@@ -709,22 +709,22 @@ export function PetPanel({ t, useSessions }: PetPanelProps) {
           <div className={css.cardTitle}>{pet.name}</div>
           {cardInfo !== null && <div className={css.cardText}>{cardInfo}</div>}
           <div className={css.cardQuip}>{cardQuip}</div>
-          <div className={css.cardMeta}>
-            {tokens > 0 && (
-              <span className={css.food}>{t('status.food', { count: shortTokens(tokens) })}</span>
-            )}
-            {rows.length > 0 && (
-              <button
-                type="button"
-                className={css.sessionsToggle}
-                onClick={() => setSessionsOpen(open => !open)}
-              >
-                {t('status.sessions', { count: rows.length })}
-              </button>
-            )}
-          </div>
         </div>
         <div className={css.cardStatus} aria-hidden>{statusGlyph}</div>
+        <div className={css.cardMeta}>
+          {tokens > 0 && (
+            <span className={css.food}>{t('status.food', { count: shortTokens(tokens) })}</span>
+          )}
+          {rows.length > 0 && (
+            <button
+              type="button"
+              className={css.sessionsToggle}
+              onClick={() => setSessionsOpen(open => !open)}
+            >
+              {t('status.sessions', { count: rows.length })}
+            </button>
+          )}
+        </div>
       </div>
 
       {/* Stacked, switchable conversation cards. */}
