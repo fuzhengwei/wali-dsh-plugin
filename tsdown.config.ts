@@ -1,5 +1,5 @@
 /**
- * Standalone tsdown config for wali-dsh-plugin (independent of the deepseek-harness monorepo).
+ * Standalone tsdown config for wali-dsh-plugin.
  *
  * Emits two artifacts:
  *  1. lib/index.js       — Node-half plugin entry (ESM)
@@ -34,18 +34,19 @@ export default [
   // Node-half: lib/index.js
   {
     name: PLUGIN_ID,
-    entry: ['lib/types/index.js'],
+    entry: ['src/index.ts'],
     outDir: 'lib',
     format: ['esm'],
     platform: 'node',
     target: 'es2024',
     dts: false,
-    clean: false,
+    clean: true,
+    fixedExtension: false,
   },
   // Client-half: lib/client.js (browser bundle)
   {
     name: `${PLUGIN_ID}/client`,
-    entry: { client: 'lib/types/client/index.js' },
+    entry: { client: 'src/client/index.ts' },
     outDir: 'lib',
     format: 'cjs',
     platform: 'browser',
