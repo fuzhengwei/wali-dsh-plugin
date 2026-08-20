@@ -19,6 +19,8 @@ import { getPetRuntime } from './runtime-bridge.ts'
 
 /** A compact, pet-friendly read of what the AI is doing right now. */
 export interface ConversationPeek {
+  /** Current session id, used to avoid double-counting token spend. */
+  readonly sessionId: SessionId
   /** Whether the agent is currently generating a turn. */
   readonly running: boolean
   /** The first in-flight tool name, when a tool call is running. */
@@ -83,9 +85,10 @@ function lastAssistantText(snapshot: ConversationSnapshot): string | null {
 }
 
 /** Collapse a full ConversationSnapshot into the pet's compact peek. */
-function toPeek(snapshot: ConversationSnapshot): ConversationPeek {
+function toPeek(sessionId: SessionId, snapshot: ConversationSnapshot): ConversationPeek {
   const partialText = snapshot.partial === null ? null : firstText(snapshot.partial.blocks)
   return {
+    sessionId,
     running: snapshot.running,
     toolName: snapshot.runningCalls[0]?.name ?? null,
     aiText: partialText ?? lastAssistantText(snapshot),
@@ -131,7 +134,7 @@ export function subscribeCurrentConversation(
       onChange(null)
       return
     }
-    const emit = () => onChange(toPeek(binding.session.getSnapshot()))
+    const emit = () => onChange(toPeek(next, binding.session.getSnapshot()))
     disposeConversation = binding.session.subscribe(emit)
     emit()
   }

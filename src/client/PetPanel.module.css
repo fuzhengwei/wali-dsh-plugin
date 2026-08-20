@@ -268,61 +268,221 @@
 .adopt {
   display: flex;
   flex-direction: column;
-  gap: 10px;
-  padding: 14px;
-  border-radius: 18px;
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.97), rgba(244, 247, 255, 0.97));
-  border: 1px solid rgba(120, 150, 220, 0.3);
-  box-shadow: 0 14px 34px rgba(24, 39, 75, 0.28);
-  backdrop-filter: blur(8px);
+  align-items: center;
+  gap: 8px;
+  width: 260px;
+  padding: 8px;
+  background: transparent;
+  border: none;
+  box-shadow: none;
+  backdrop-filter: none;
   pointer-events: auto;
   animation: pet-card-in 0.34s cubic-bezier(0.34, 1.56, 0.64, 1);
 }
 
 .adoptTitle {
-  font-size: 12px;
-  font-weight: 700;
+  font-size: 14px;
+  font-weight: 800;
   color: #1c2333;
   text-align: center;
+  text-shadow: 0 1px 8px rgba(255, 255, 255, 0.95);
 }
 
-.adoptRow {
-  display: flex;
-  gap: 10px;
+.adoptText {
+  max-width: 190px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: #5a6685;
+  text-align: center;
+  text-shadow: 0 1px 8px rgba(255, 255, 255, 0.95);
 }
 
-.adoptCard {
+.adoptEgg {
+  position: relative;
   display: flex;
-  flex-direction: column;
   align-items: center;
-  gap: 6px;
-  width: 74px;
-  padding: 12px 8px;
-  border: 1px solid color-mix(in srgb, var(--pet-accent) 30%, transparent);
-  border-radius: 14px;
-  background: color-mix(in srgb, var(--pet-accent) 10%, #fff);
+  justify-content: center;
+  width: 154px;
+  height: 154px;
+  border: none;
+  border-radius: 999px;
+  background: transparent;
   cursor: pointer;
   pointer-events: auto;
-  transition: transform 0.12s ease, box-shadow 0.15s ease;
+  transition: transform 0.15s ease, filter 0.15s ease;
 }
 
-.adoptCard:hover {
-  transform: translateY(-3px);
-  box-shadow: 0 8px 18px color-mix(in srgb, var(--pet-accent) 40%, transparent);
+.adoptEgg:hover {
+  transform: translateY(-3px) scale(1.04);
+  filter: drop-shadow(0 10px 16px rgba(250, 181, 47, 0.32));
 }
 
-.adoptCard:active { transform: scale(0.97); }
+.adoptEgg:active { transform: scale(0.96); }
 
-.adoptFace {
-  font-size: 30px;
+.adoptEgg:disabled { cursor: default; }
+
+.eggGlow {
+  position: absolute;
+  inset: 3px;
+  border-radius: 999px;
+  background:
+    radial-gradient(circle, rgba(255, 236, 152, 0.76), rgba(255, 226, 110, 0.28) 43%, transparent 68%),
+    radial-gradient(circle, rgba(105, 169, 255, 0.18), transparent 64%);
+  animation: pet-egg-glow 2.5s ease-in-out infinite;
+}
+
+.eggShadow {
+  position: absolute;
+  left: 44px;
+  right: 44px;
+  bottom: 21px;
+  height: 14px;
+  border-radius: 999px;
+  background: rgba(71, 47, 16, 0.18);
+  filter: blur(7px);
+  transform-origin: center;
+  animation: pet-egg-shadow 2.2s ease-in-out infinite;
+}
+
+.eggShell {
+  position: relative;
+  width: 78px;
+  height: 106px;
+  filter: drop-shadow(0 12px 14px rgba(92, 67, 20, 0.2));
+  animation: pet-egg-float 2.2s ease-in-out infinite;
+  z-index: 1;
+}
+
+.eggTop,
+.eggBottom {
+  position: absolute;
+  left: 0;
+  width: 78px;
+  overflow: hidden;
+  background:
+    radial-gradient(circle at 35% 27%, rgba(255, 255, 255, 0.96), rgba(255, 255, 255, 0.2) 18%, transparent 28%),
+    radial-gradient(circle at 64% 62%, rgba(181, 162, 134, 0.28), transparent 38%),
+    linear-gradient(130deg, #fffdf3 0%, #f6f0db 43%, #d8ccb7 100%);
+}
+
+.eggTop {
+  top: 0;
+  height: 62px;
+  border-radius: 52% 52% 28% 24% / 64% 64% 30% 28%;
+  clip-path: polygon(0 0, 100% 0, 100% 76%, 88% 68%, 75% 84%, 61% 70%, 48% 88%, 34% 71%, 21% 84%, 8% 68%, 0 78%);
+  transform-origin: 42% 86%;
+}
+
+.eggBottom {
+  bottom: 0;
+  height: 68px;
+  border-radius: 26% 28% 52% 52% / 28% 30% 66% 66%;
+  clip-path: polygon(0 24%, 8% 32%, 21% 16%, 34% 29%, 48% 12%, 61% 30%, 75% 16%, 88% 32%, 100% 24%, 100% 100%, 0 100%);
+  transform-origin: 54% 18%;
+}
+
+.eggShine {
+  position: absolute;
+  top: 22px;
+  left: 17px;
+  width: 18px;
+  height: 42px;
+  border-radius: 999px;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.72), transparent);
+  filter: blur(1px);
+  transform: rotate(15deg);
+  z-index: 2;
+}
+
+.eggSpeckles {
+  position: absolute;
+  inset: 0;
+  border-radius: 999px;
+  background:
+    radial-gradient(circle at 63% 26%, rgba(210, 180, 124, 0.22) 0 2px, transparent 3px),
+    radial-gradient(circle at 36% 72%, rgba(210, 180, 124, 0.2) 0 2px, transparent 3px),
+    radial-gradient(circle at 68% 70%, rgba(210, 180, 124, 0.16) 0 1.5px, transparent 3px);
+  z-index: 3;
+}
+
+.eggCrack {
+  position: absolute;
+  top: 40px;
+  left: 50%;
+  width: 5px;
+  height: 38px;
+  opacity: 0;
+  z-index: 4;
+  transform: translateX(-50%);
+}
+
+.eggCrack::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: #8d7049;
+  clip-path: polygon(40% 0, 100% 20%, 58% 43%, 90% 58%, 44% 100%, 52% 67%, 0 48%, 46% 28%);
+  filter: drop-shadow(0 0 4px rgba(255, 255, 255, 0.55));
+}
+
+.eggSparkleA,
+.eggSparkleB {
+  position: absolute;
+  color: #f0b52c;
+  font-size: 18px;
   line-height: 1;
+  opacity: 0.74;
+  text-shadow: 0 0 12px rgba(255, 223, 117, 0.9);
+  animation: pet-sparkle 2.1s ease-in-out infinite;
 }
 
-.adoptName {
-  font-size: 11px;
-  font-weight: 700;
-  color: var(--pet-accent);
-  white-space: nowrap;
+.eggSparkleA {
+  top: 26px;
+  right: 28px;
+}
+
+.eggSparkleB {
+  left: 25px;
+  bottom: 40px;
+  animation-delay: -0.85s;
+}
+
+.eggHatching .eggShell {
+  animation: pet-egg-shake 0.22s linear 3 forwards;
+}
+
+.eggHatching .eggCrack {
+  opacity: 1;
+  animation: pet-crack-flash 0.8s ease-out forwards;
+}
+
+.eggHatching .eggTop {
+  animation: pet-egg-top-open 0.92s 0.32s cubic-bezier(0.22, 1, 0.36, 1) forwards;
+}
+
+.eggHatching .eggBottom {
+  animation: pet-egg-bottom-open 0.92s 0.32s cubic-bezier(0.22, 1, 0.36, 1) forwards;
+}
+
+.eggHatching .eggShine,
+.eggHatching .eggSpeckles {
+  animation: pet-egg-fade 0.48s 0.26s ease-out forwards;
+}
+
+.eggHatching .eggGlow {
+  animation: pet-egg-burst 1.1s ease-out forwards;
+}
+
+.eggHatching .eggSparkleA,
+.eggHatching .eggSparkleB {
+  animation: pet-sparkle-burst 0.92s ease-out forwards;
+}
+
+.adoptHint {
+  font-size: 12px;
+  font-weight: 800;
+  color: #d8911b;
+  text-align: center;
 }
 
 .cardStatus {
@@ -798,6 +958,13 @@
   margin-bottom: 2px;
 }
 
+.menuHint {
+  padding: 5px 10px 4px;
+  color: #6b7594;
+  font-size: 10px;
+  font-weight: 700;
+}
+
 .menuItem {
   display: block;
   width: 100%;
@@ -821,6 +988,16 @@
 
 .menuItem:active {
   transform: scale(0.97);
+}
+
+.menuItem:disabled {
+  color: #96a0ba;
+  cursor: not-allowed;
+}
+
+.menuItem:disabled:hover {
+  background: transparent;
+  color: #96a0ba;
 }
 
 /* ---- States & animations ---- */
@@ -913,6 +1090,64 @@
   50% { transform: translateY(-3px); }
 }
 
+@keyframes pet-egg-float {
+  0%, 100% { transform: translateY(0) rotate(-2deg); }
+  50% { transform: translateY(-8px) rotate(2deg); }
+}
+
+@keyframes pet-egg-shadow {
+  0%, 100% { transform: scaleX(0.78); opacity: 0.14; }
+  50% { transform: scaleX(1.08); opacity: 0.23; }
+}
+
+@keyframes pet-egg-glow {
+  0%, 100% { transform: scale(0.94); opacity: 0.7; }
+  50% { transform: scale(1.08); opacity: 1; }
+}
+
+@keyframes pet-sparkle {
+  0%, 100% { transform: translateY(0) scale(0.78) rotate(0deg); opacity: 0.28; }
+  50% { transform: translateY(-6px) scale(1.15) rotate(18deg); opacity: 0.92; }
+}
+
+@keyframes pet-egg-shake {
+  0%, 100% { transform: translateX(0) rotate(0deg) scale(1); }
+  25% { transform: translateX(-5px) rotate(-6deg) scale(1.03); }
+  50% { transform: translateX(5px) rotate(6deg) scale(1.04); }
+  75% { transform: translateX(-2px) rotate(-3deg) scale(1.03); }
+}
+
+@keyframes pet-egg-top-open {
+  0% { transform: translate(0, 0) rotate(0deg); opacity: 1; }
+  100% { transform: translate(-24px, -30px) rotate(-28deg); opacity: 0; }
+}
+
+@keyframes pet-egg-bottom-open {
+  0% { transform: translate(0, 0) rotate(0deg); opacity: 1; }
+  100% { transform: translate(18px, 28px) rotate(18deg); opacity: 0; }
+}
+
+@keyframes pet-egg-fade {
+  to { opacity: 0; }
+}
+
+@keyframes pet-egg-burst {
+  0% { transform: scale(1); opacity: 0.85; }
+  54% { transform: scale(1.18); opacity: 1; }
+  100% { transform: scale(1.65); opacity: 0; }
+}
+
+@keyframes pet-sparkle-burst {
+  0% { transform: translateY(0) scale(1); opacity: 0.8; }
+  100% { transform: translateY(-30px) scale(1.65) rotate(38deg); opacity: 0; }
+}
+
+@keyframes pet-crack-flash {
+  0% { transform: translateX(-50%) scaleY(0.45); opacity: 0; }
+  28% { transform: translateX(-50%) scaleY(1); opacity: 1; }
+  100% { transform: translateX(-50%) scaleY(1.08); opacity: 0; }
+}
+
 @keyframes pet-card-in {
   from { opacity: 0; transform: translateY(6px) scale(0.96); }
   to { opacity: 1; transform: translateY(0) scale(1); }
@@ -925,7 +1160,7 @@
 
 @media (prefers-reduced-motion: reduce) {
   .roamer { transition: none; }
-  .robot, .walking, .excited, .busy, .adoptBadge, .card, .menu, .sessionDot,
+  .robot, .walking, .excited, .busy, .adoptBadge, .adoptEgg, .eggGlow, .eggShell, .eggTop, .eggBottom, .eggCrack, .eggSparkleA, .eggSparkleB, .card, .menu, .sessionDot,
   .head::before, .body::before, .blush,
   .walking .legLeft, .walking .legRight, .walking .armLeft, .walking .armRight {
     animation: none;

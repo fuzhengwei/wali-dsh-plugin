@@ -37,6 +37,10 @@ interface PetState {
   readonly mood: 'happy' | 'hungry' | 'sleepy'
   /** Adopted regional persona driving colors + dialect quips. */
   readonly persona: PersonaId
+  /** Tokens earned toward the next random pet change. */
+  readonly tokenCredit: number
+  /** Highest observed token total per session, preventing repeat credit. */
+  readonly observedTokens: Readonly<Record<string, number>>
   /** Optional user-uploaded avatar (base64 data URL), shown rounded on the face. */
   readonly avatar?: string
   /** Optional user-uploaded background image (base64 data URL), shown as card background. */
@@ -44,6 +48,9 @@ interface PetState {
 }
 
 const STORAGE_KEY = 'dsh-ui-pet:state'
+
+const TOKENS_PER_PERSONA = 1_000_000
+const MAX_TOKEN_SESSIONS = 80
 
 /** How long the excited animation + bubble stays before settling back. */
 const EXCITED_MS = 3600
@@ -93,8 +100,27 @@ function excerpt(text: string, max: number = PEEK_TEXT_MAX): string {
 
 /** Humanize a token count into a short "food eaten" figure. */
 function shortTokens(n: number): string {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(n >= 10_000_000 ? 0 : 1)}M`
   if (n >= 1000) return `${(n / 1000).toFixed(1)}k`
   return String(n)
+}
+
+function sanitizeObservedTokens(value: unknown): Record<string, number> {
+  if (typeof value !== 'object' || value === null) return {}
+  const entries = Object.entries(value as Record<string, unknown>)
+    .filter(([sessionId, tokens]) => sessionId !== '' && typeof tokens === 'number' && Number.isFinite(tokens) && tokens >= 0)
+    .map(([sessionId, tokens]) => [sessionId, Math.round(tokens)] as const)
+  return Object.fromEntries(entries.slice(-MAX_TOKEN_SESSIONS))
+}
+
+function observedFromPeek(peek: ConversationPeek | null): Record<string, number> {
+  if (peek === null) return {}
+  return { [String(peek.sessionId)]: Math.max(0, Math.round(peek.tokens)) }
+}
+
+function randomPersonaId(except?: PersonaId): PersonaId {
+  const options = except === undefined ? PERSONA_LIST : PERSONA_LIST.filter(p => p.id !== except)
+  return options[Math.floor(Math.random() * options.length)]?.id ?? DEFAULT_PERSONA
 }
 
 /** Idle span before the pet proactively speaks up (nudges the user). */
@@ -126,37 +152,6 @@ function playChime(): void {
   })
     window.setTimeout(() => { void ctx.close() }, 600)
   } catch { /* audio may be blocked; ignore */ }
-}
-
-/** Emoji glyph per animal shape — a distinct silhouette for each form. */
-const SHAPE_EMOJI: Readonly<Record<PetShape, string>> = {
-  tiger: '🐯',
-  dragon: '🐲',
-  cat: '🐱',
-  turtle: '🐢',
-  fish: '🐟',
-  ox: '🐮',
-  robot: '🤖',
-  mario: '🍄',
-  wukong: '🐵',
-  nezha: '🔥',
-  niudemon: '🐂',
-  redboy: '👹',
-  tang: '🧑‍🦲',
-  pikachu: '⚡',
-  baymax: '🤍',
-  minion: '🟡',
-  spongebob: '🧽',
-  simba: '🦁',
-  po: '🐼',
-  tom: '🐱',
-  jerry: '🐭',
-  mickey: '🐭',
-  donald: '🦆',
-  doraemon: '🤖',
-  goku: '🔥',
-  shinchan: '👶',
-  conan: '🔍',
 }
 
 /** Per-shape skeleton decorations layered over the shared head/face/body rig.
@@ -243,12 +238,14 @@ function loadPet(): PetState | null {
     if (raw === null) return null
     const parsed = JSON.parse(raw) as PetState
     if (typeof parsed.name !== 'string') return null
-    return {
-      ...parsed,
-      persona: asPersonaId(parsed.persona),
-      // Back-compat: old saves predate the bond system.
-      affinity: typeof parsed.affinity === 'number' ? clamp(parsed.affinity, 0, 100) : AFFINITY_START,
-    }
+      return {
+        ...parsed,
+        persona: asPersonaId(parsed.persona),
+        // Back-compat: old saves predate the bond system.
+        affinity: typeof parsed.affinity === 'number' ? clamp(parsed.affinity, 0, 100) : AFFINITY_START,
+        tokenCredit: typeof parsed.tokenCredit === 'number' && Number.isFinite(parsed.tokenCredit) ? Math.max(0, parsed.tokenCredit) : 0,
+        observedTokens: sanitizeObservedTokens(parsed.observedTokens),
+      }
   } catch {
     return null
   }
@@ -280,6 +277,7 @@ export function PetPanel({ t, useSessions }: PetPanelProps) {
   const [menuOpen, setMenuOpen] = useState(false)
   const [sessionsOpen, setSessionsOpen] = useState(false)
   const [hovered, setHovered] = useState(false)
+  const [hatching, setHatching] = useState(false)
   // Position in px from the left/top of the viewport, plus facing direction.
   const [pos, setPos] = useState<{ x: number; y: number }>(() => ({ x: 120, y: 320 }))
   const [facing, setFacing] = useState<1 | -1>(1)
@@ -290,6 +288,7 @@ export function PetPanel({ t, useSessions }: PetPanelProps) {
   // Switchable conversation rows for the stacked session cards.
   const [rows, setRows] = useState<readonly SessionRow[]>([])
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const hatchTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const roamTimer = useRef<ReturnType<typeof setInterval> | null>(null)
   const fileInput = useRef<HTMLInputElement | null>(null)
   const bgInput = useRef<HTMLInputElement | null>(null)
@@ -306,7 +305,6 @@ export function PetPanel({ t, useSessions }: PetPanelProps) {
   // Bond bookkeeping edges: last-seen session count, token total, and error state.
   const sessionCount = useSessions(s => s.ids.length)
   const lastSessionCount = useRef(sessionCount)
-  const lastTokens = useRef(0)
   const lastErrored = useRef(false)
   // Once-per-day guards for late-night care and festival blessings (keyed by Y-M-D).
   const lastLateNight = useRef<string | null>(null)
@@ -322,9 +320,8 @@ export function PetPanel({ t, useSessions }: PetPanelProps) {
 
   // Subscribe to the current conversation snapshot, re-subscribing on session switch.
   useEffect(() => {
-    if (pet === null) return
     return subscribeCurrentConversation(setPeek)
-  }, [pet])
+  }, [])
 
   // Subscribe to the switchable session rows.
   useEffect(() => {
@@ -443,22 +440,30 @@ export function PetPanel({ t, useSessions }: PetPanelProps) {
   // Bond tracks the live conversation: reward replies + token spend, punish failures.
   useEffect(() => {
     if (pet === null || peek === null) return
-    const tokens = peek.tokens
     const errored = peek.error !== null
-    let delta = 0
-    // Token spend since last snapshot → "food eaten", rewarded per 1k.
-    if (tokens > lastTokens.current) {
-      delta += ((tokens - lastTokens.current) / 1000) * AFFINITY_PER_1K_TOKENS
-    }
-    // Rising edge of an error → penalty; a fresh settled reply → reward.
-    if (errored && !lastErrored.current) delta -= AFFINITY_ON_ERROR
-    else if (!errored && !peek.running && peek.aiText !== null && tokens > lastTokens.current) {
-      delta += AFFINITY_PER_REPLY
-    }
-    lastTokens.current = tokens
+    const wasErrored = lastErrored.current
+    setPet(current => {
+      if (current === null) return current
+      const sessionId = String(peek.sessionId)
+      const tokens = Math.max(0, Math.round(peek.tokens))
+      const previousTokens = current.observedTokens[sessionId] ?? 0
+      const spentTokens = Math.max(0, tokens - previousTokens)
+      let delta = spentTokens > 0 ? (spentTokens / 1000) * AFFINITY_PER_1K_TOKENS : 0
+      if (errored && !wasErrored) delta -= AFFINITY_ON_ERROR
+      else if (!errored && !peek.running && peek.aiText !== null && spentTokens > 0) delta += AFFINITY_PER_REPLY
+      if (spentTokens === 0 && delta === 0) return current
+      const observedTokens = previousTokens >= tokens
+        ? current.observedTokens
+        : sanitizeObservedTokens({ ...current.observedTokens, [sessionId]: tokens })
+      return {
+        ...current,
+        affinity: clamp(current.affinity + Math.round(delta), 0, 100),
+        tokenCredit: current.tokenCredit + spentTokens,
+        observedTokens,
+      }
+    })
     lastErrored.current = errored
-    bumpAffinity(Math.round(delta))
-  }, [peek, pet, bumpAffinity])
+  }, [peek, pet])
 
   // Whether the AI is actively working right now — drives walk gating + scene.
   const busy = peek !== null && peek.running
@@ -497,6 +502,7 @@ export function PetPanel({ t, useSessions }: PetPanelProps) {
 
   useEffect(() => () => {
     if (timer.current !== null) clearTimeout(timer.current)
+    if (hatchTimer.current !== null) clearTimeout(hatchTimer.current)
   }, [])
 
   // ---- Drag handlers: pointer down on the robot starts a potential drag. ----
@@ -533,10 +539,27 @@ export function PetPanel({ t, useSessions }: PetPanelProps) {
   }, [])
 
   // ---- Adoption + care actions. ----
-  const adopt = useCallback((personaId: PersonaId) => {
-    const name = PERSONAS[personaId]?.nameKey ?? PERSONAS[DEFAULT_PERSONA].nameKey
-    setPet({ name: t(name), level: 1, affinity: AFFINITY_START, mood: 'happy', persona: personaId })
-  }, [t])
+  const hatchEgg = useCallback(() => {
+    if (hatching || pet !== null) return
+    setHatching(true)
+    if (hatchTimer.current !== null) clearTimeout(hatchTimer.current)
+    hatchTimer.current = setTimeout(() => {
+      const personaId = randomPersonaId()
+      const name = PERSONAS[personaId]?.nameKey ?? PERSONAS[DEFAULT_PERSONA].nameKey
+      setPet({
+        name: t(name),
+        level: 1,
+        affinity: AFFINITY_START,
+        mood: 'happy',
+        persona: personaId,
+        tokenCredit: 0,
+        observedTokens: observedFromPeek(peek),
+      })
+      setHatching(false)
+      speakFor(personaId, 'hello')
+      hatchTimer.current = null
+    }, 1250)
+  }, [hatching, peek, pet, speakFor, t])
 
   const rename = useCallback(() => {
     const next = window.prompt(t('panel.namePrompt'))
@@ -546,15 +569,24 @@ export function PetPanel({ t, useSessions }: PetPanelProps) {
     setMenuOpen(false)
   }, [t])
 
-  // Switch to the next character in the list; the new one greets you (hello).
+  // Switch to a random new character once enough token credit has been earned.
   const switchPersona = useCallback(() => {
     setPet(current => {
       if (current === null) return current
-      const idx = PERSONA_LIST.findIndex(p => p.id === current.persona)
-      const next = PERSONA_LIST[(idx + 1) % PERSONA_LIST.length] ?? PERSONAS[DEFAULT_PERSONA]
-      // Greet with the *new* persona explicitly (state update is async here).
+      if (current.tokenCredit < TOKENS_PER_PERSONA) return current
+      const personaId = randomPersonaId(current.persona)
+      const next = PERSONAS[personaId] ?? PERSONAS[DEFAULT_PERSONA]
       speakFor(next.id, 'hello')
-      return { ...current, persona: next.id, name: t(next.nameKey) }
+      return {
+        ...current,
+        name: t(next.nameKey),
+        level: 1,
+        affinity: AFFINITY_START,
+        mood: 'happy',
+        persona: next.id,
+        avatar: undefined,
+        tokenCredit: current.tokenCredit - TOKENS_PER_PERSONA,
+      }
     })
     setMenuOpen(false)
   }, [speakFor, t])
@@ -697,6 +729,10 @@ export function PetPanel({ t, useSessions }: PetPanelProps) {
 
   const statusGlyph = peek !== null && peek.error !== null ? '⚠️' : busy ? '…' : '✓'
   const tokens = peek?.tokens ?? 0
+  const tokenCredit = pet?.tokenCredit ?? 0
+  const canSwitchPersona = tokenCredit >= TOKENS_PER_PERSONA
+  const switchRemaining = Math.max(0, TOKENS_PER_PERSONA - tokenCredit)
+  const switchProgress = Math.min(tokenCredit, TOKENS_PER_PERSONA)
 
   // Theme variables from the adopted persona (accent colors + fallback face).
   const themeStyle = {
@@ -706,26 +742,33 @@ export function PetPanel({ t, useSessions }: PetPanelProps) {
     ['--pet-accent2' as string]: persona.accent2,
   } as React.CSSProperties
 
-  // Not adopted yet: an adoption picker with the available personas.
+  // Not adopted yet: a single adoption egg that hatches into a random pet.
   if (pet === null) {
     return (
       <div className={css.roamer} style={{ left: pos.x, top: pos.y }}>
         <div className={css.adopt}>
-          <div className={css.adoptTitle}>{t('panel.pickPersona')}</div>
-          <div className={css.adoptRow}>
-            {PERSONA_LIST.map(p => (
-              <button
-                key={p.id}
-                type="button"
-                className={css.adoptCard}
-                style={{ ['--pet-accent' as string]: p.accent, ['--pet-accent2' as string]: p.accent2 } as React.CSSProperties}
-                onClick={() => adopt(p.id)}
-              >
-                <span className={css.adoptFace} aria-hidden>{SHAPE_EMOJI[p.shape]}</span>
-                <span className={css.adoptName}>{t(p.nameKey)}</span>
-              </button>
-            ))}
-          </div>
+          <div className={css.adoptTitle}>{t('panel.adoptEggTitle')}</div>
+          <div className={css.adoptText}>{t('panel.adoptEggText')}</div>
+          <button
+            type="button"
+            className={`${css.adoptEgg} ${hatching ? (css.eggHatching ?? '') : ''}`}
+            onClick={hatchEgg}
+            disabled={hatching}
+            aria-label={hatching ? t('panel.hatching') : t('panel.adoptEggButton')}
+          >
+            <span className={css.eggGlow} aria-hidden />
+            <span className={css.eggSparkleA} aria-hidden>✦</span>
+            <span className={css.eggSparkleB} aria-hidden>✧</span>
+            <span className={css.eggShell} aria-hidden>
+              <span className={css.eggTop} />
+              <span className={css.eggBottom} />
+              <span className={css.eggShine} />
+              <span className={css.eggSpeckles} />
+              <span className={css.eggCrack} />
+            </span>
+            <span className={css.eggShadow} aria-hidden />
+          </button>
+          <div className={css.adoptHint}>{hatching ? t('panel.hatching') : t('panel.adoptEggButton')}</div>
         </div>
       </div>
     )
@@ -875,7 +918,10 @@ export function PetPanel({ t, useSessions }: PetPanelProps) {
           {pet.background !== undefined && (
             <button type="button" className={css.menuItem} onClick={clearBackground}>{t('panel.clearBackground')}</button>
           )}
-          <button type="button" className={css.menuItem} onClick={switchPersona}>{t('panel.persona')}</button>
+          <div className={css.menuHint}>{t('panel.personaProgress', { count: shortTokens(switchProgress) })}</div>
+          <button type="button" className={css.menuItem} onClick={switchPersona} disabled={!canSwitchPersona}>
+            {canSwitchPersona ? t('panel.persona') : t('panel.personaLocked', { count: shortTokens(switchRemaining) })}
+          </button>
           <button type="button" className={css.menuItem} onClick={rename}>{t('panel.rename')}</button>
         </div>
       )}
