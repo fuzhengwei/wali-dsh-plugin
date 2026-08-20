@@ -613,6 +613,16 @@ export function PetPanel({ t, useSessions }: PetPanelProps) {
     requestAnimationFrame(() => bgInput.current?.click())
   }, [])
 
+  const clearAvatar = useCallback(() => {
+    setMenuOpen(false)
+    setPet(current => (current === null ? current : { ...current, avatar: undefined }))
+  }, [])
+
+  const clearBackground = useCallback(() => {
+    setMenuOpen(false)
+    setPet(current => (current === null ? current : { ...current, background: undefined }))
+  }, [])
+
   const pickSession = useCallback((id: SessionRow['id']) => {
     openSession(id)
     setSessionsOpen(false)
@@ -808,7 +818,13 @@ export function PetPanel({ t, useSessions }: PetPanelProps) {
         <div className={css.menu}>
           <div className={css.menuName}>{pet.name} · {t('status.level', { level: pet.affinity })}</div>
           <button type="button" className={css.menuItem} onClick={uploadAvatar}>{t('panel.avatar')}</button>
+          {pet.avatar !== undefined && (
+            <button type="button" className={css.menuItem} onClick={clearAvatar}>{t('panel.clearAvatar')}</button>
+          )}
           <button type="button" className={css.menuItem} onClick={uploadBackground}>{t('panel.background')}</button>
+          {pet.background !== undefined && (
+            <button type="button" className={css.menuItem} onClick={clearBackground}>{t('panel.clearBackground')}</button>
+          )}
           <button type="button" className={css.menuItem} onClick={switchPersona}>{t('panel.persona')}</button>
           <button type="button" className={css.menuItem} onClick={rename}>{t('panel.rename')}</button>
         </div>
