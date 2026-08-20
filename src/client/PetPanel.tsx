@@ -55,10 +55,12 @@ const PEEK_TEXT_MAX = 36
 /** Max characters of an error message shown before truncating. */
 const PEEK_ERROR_MAX = 48
 
-/** Max avatar data-URL length we persist, to stay under localStorage quota. */
-const AVATAR_MAX_CHARS = 3_500_000
-/** Longest edge (px) we downscale an uploaded background to before storing. */
-const AVATAR_MAX_EDGE = 900
+/** Max data-URL length we persist, to stay under localStorage quota (~5 MB). */
+const AVATAR_MAX_CHARS = 4_500_000
+/** Longest edge (px) we downscale an uploaded image to before storing. */
+const AVATAR_MAX_EDGE = 1200
+/** Supported image MIME types for upload. */
+const AVATAR_ACCEPT = 'image/*'
 
 /** Pixels of pointer travel before a press counts as a drag (not a click). */
 const DRAG_THRESHOLD = 4
@@ -515,31 +517,83 @@ export function PetPanel({ t, useSessions }: PetPanelProps) {
 
   const onPickAvatar = useCallback((event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0]
-    event.target.value = ''
-    if (file === undefined) return
+    if (file === undefined) {
+      event.target.value = ''
+      return
+    }
+    // Read as Data URL directly — works for ALL image formats the browser supports
+    // (JPEG, PNG, GIF, WebP, BMP, SVG, ICO, AVIF, etc.) without needing <Image> decoding.
     const reader = new FileReader()
     reader.onload = () => {
-      const src = typeof reader.result === 'string' ? reader.result : null
-      if (src === null) return
-      // Downscale the image so the stored data URL stays well under quota.
+      const dataUrl = typeof reader.result === 'string' ? reader.result : null
+      if (dataUrl === null) return
+      // If the data URL is small enough, use it as-is (preserves transparency, original format).
+      if (dataUrl.length <= AVATAR_MAX_CHARS) {
+        setPet(current => (current === null ? current : { ...current, avatar: dataUrl }))
+        return
+      }
+      // Too large: downscale via canvas, trying multiple formats.
       const image = new Image()
       image.onload = () => {
-        const scale = Math.min(1, AVATAR_MAX_EDGE / Math.max(image.width, image.height))
-        const width = Math.max(1, Math.round(image.width * scale))
-        const height = Math.max(1, Math.round(image.height * scale))
+        let { width, height } = image
+        const maxEdge = Math.max(width, height)
+        if (maxEdge > AVATAR_MAX_EDGE) {
+          const scale = AVATAR_MAX_EDGE / maxEdge
+          width = Math.max(1, Math.round(width * scale))
+          height = Math.max(1, Math.round(height * scale))
+        }
         const canvas = document.createElement('canvas')
         canvas.width = width
         canvas.height = height
         const ctx = canvas.getContext('2d')
-        if (ctx === null) return
+        if (ctx === null) {
+          // Canvas not available — try storing the raw data URL anyway.
+          setPet(current => (current === null ? current : { ...current, avatar: dataUrl }))
+          return
+        }
         ctx.drawImage(image, 0, 0, width, height)
-        const url = canvas.toDataURL('image/jpeg', 0.9)
-        if (url.length > AVATAR_MAX_CHARS) return
-        setPet(current => (current === null ? current : { ...current, avatar: url }))
+        // Try PNG first (preserves transparency), then JPEG as fallback.
+        let url = canvas.toDataURL('image/png')
+        if (url.length > AVATAR_MAX_CHARS) {
+          url = canvas.toDataURL('image/jpeg', 0.92)
+        }
+        if (url.length > AVATAR_MAX_CHARS) {
+          // Still too large: progressively reduce quality.
+          for (const q of [0.85, 0.75, 0.6, 0.45, 0.3]) {
+            url = canvas.toDataURL('image/jpeg', q)
+            if (url.length <= AVATAR_MAX_CHARS) break
+          }
+        }
+        if (url.length > AVATAR_MAX_CHARS) {
+          // Last resort: scale down further.
+          for (const factor of [0.75, 0.5, 0.35, 0.25]) {
+            const w = Math.max(1, Math.round(width * factor))
+            const h = Math.max(1, Math.round(height * factor))
+            canvas.width = w
+            canvas.height = h
+            ctx.drawImage(image, 0, 0, w, h)
+            url = canvas.toDataURL('image/jpeg', 0.7)
+            if (url.length <= AVATAR_MAX_CHARS) break
+          }
+        }
+        if (url.length <= AVATAR_MAX_CHARS) {
+          setPet(current => (current === null ? current : { ...current, avatar: url }))
+        }
       }
-      image.src = src
+      image.onerror = () => {
+        // Browser can't decode the image — store the raw data URL if it fits.
+        if (dataUrl.length <= AVATAR_MAX_CHARS) {
+          setPet(current => (current === null ? current : { ...current, avatar: dataUrl }))
+        }
+      }
+      image.src = dataUrl
+    }
+    reader.onerror = () => {
+      // FileReader failed — silently ignore.
     }
     reader.readAsDataURL(file)
+    // Reset the input so the same file can be re-selected later.
+    event.target.value = ''
     setMenuOpen(false)
   }, [])
 
