@@ -39,12 +39,14 @@ interface PetState {
   readonly persona: PersonaId
   /** Tokens earned toward the next random pet change. */
   readonly tokenCredit: number
+  /** Number of times the user has manually switched to another pet. */
+  readonly personaSwitchCount: number
   /** Highest observed token total per session, preventing repeat credit. */
   readonly observedTokens: Readonly<Record<string, number>>
   /** Optional user-uploaded avatar (base64 data URL), shown rounded on the face. */
   readonly avatar?: string
-  /** Optional user-uploaded background image (base64 data URL), shown as card background. */
-  readonly background?: string
+  /** Optional user-uploaded background images (base64 data URLs), up to 5 items. */
+  readonly backgrounds?: readonly string[]
 }
 
 const STORAGE_KEY = 'dsh-ui-pet:state'
@@ -70,6 +72,9 @@ const AVATAR_MAX_CHARS = 4_500_000
 const AVATAR_MAX_EDGE = 1200
 /** Supported image MIME types for upload. */
 const AVATAR_ACCEPT = 'image/*'
+const BACKGROUND_MAX_ITEMS = 5
+const BACKGROUND_ROTATE_MS = 22_000
+const BACKGROUND_FADE_MS = 1_600
 
 /** Pixels of pointer travel before a press counts as a drag (not a click). */
 const DRAG_THRESHOLD = 4
@@ -118,6 +123,19 @@ function observedFromPeek(peek: ConversationPeek | null): Record<string, number>
   return { [String(peek.sessionId)]: Math.max(0, Math.round(peek.tokens)) }
 }
 
+function sanitizeBackgrounds(value: unknown): string[] {
+  if (!Array.isArray(value)) return []
+  return value
+    .filter((item): item is string => typeof item === 'string' && item !== '')
+    .slice(0, BACKGROUND_MAX_ITEMS)
+}
+
+function randomIndex(length: number, except?: number): number {
+  if (length <= 1) return 0
+  const options = Array.from({ length }, (_, index) => index).filter(index => index !== except)
+  return options[Math.floor(Math.random() * options.length)] ?? 0
+}
+
 function randomPersonaId(except?: PersonaId): PersonaId {
   const options = except === undefined ? PERSONA_LIST : PERSONA_LIST.filter(p => p.id !== except)
   return options[Math.floor(Math.random() * options.length)]?.id ?? DEFAULT_PERSONA
@@ -132,7 +150,9 @@ function createStarterPet(name: string): PetState {
     mood: 'happy',
     persona: DEFAULT_PERSONA,
     tokenCredit: 0,
+    personaSwitchCount: 0,
     observedTokens: {},
+    backgrounds: [],
   }
 }
 
@@ -290,13 +310,19 @@ function loadPet(fallbackName: string): PetState {
     if (raw === null) return createStarterPet(fallbackName)
     const parsed = JSON.parse(raw) as PetState
     if (typeof parsed.name !== 'string') return createStarterPet(fallbackName)
+    const backgrounds = sanitizeBackgrounds(parsed.backgrounds)
+    const legacyBackground = typeof parsed.background === 'string' && parsed.background !== '' ? [parsed.background] : []
       return {
         ...parsed,
         persona: asPersonaId(parsed.persona),
         // Back-compat: old saves predate the bond system.
         affinity: typeof parsed.affinity === 'number' ? clamp(parsed.affinity, 0, 100) : AFFINITY_START,
         tokenCredit: typeof parsed.tokenCredit === 'number' && Number.isFinite(parsed.tokenCredit) ? Math.max(0, parsed.tokenCredit) : 0,
+        personaSwitchCount: typeof parsed.personaSwitchCount === 'number' && Number.isFinite(parsed.personaSwitchCount)
+          ? Math.max(0, Math.round(parsed.personaSwitchCount))
+          : 0,
         observedTokens: sanitizeObservedTokens(parsed.observedTokens),
+        backgrounds: backgrounds.length > 0 ? backgrounds : legacyBackground,
       }
   } catch {
     return createStarterPet(fallbackName)
@@ -351,11 +377,48 @@ export function PetPanel({ t, useSessions }: PetPanelProps) {
   const drag = useRef<{ px: number; py: number; ox: number; oy: number; moved: boolean } | null>(null)
   const [photoNatural, setPhotoNatural] = useState<{ width: number; height: number } | null>(null)
   const [cardSize, setCardSize] = useState<{ width: number; height: number }>({ width: 0, height: 0 })
+  const [backgroundIndex, setBackgroundIndex] = useState(0)
+
+  const backgrounds = pet?.backgrounds ?? []
+  const activeBackground = backgrounds[backgroundIndex] ?? backgrounds[0]
+  const [displayBackground, setDisplayBackground] = useState<string | undefined>(activeBackground)
+  const [fadingBackground, setFadingBackground] = useState<string | undefined>(undefined)
+  const [backgroundVisible, setBackgroundVisible] = useState(true)
 
   useEffect(() => { savePet(pet) }, [pet])
 
   useEffect(() => {
-    if (pet?.background === undefined) {
+    if (backgrounds.length <= 1) {
+      setBackgroundIndex(0)
+      return
+    }
+    const id = window.setInterval(() => {
+      setBackgroundIndex(current => randomIndex(backgrounds.length, current))
+    }, BACKGROUND_ROTATE_MS)
+    return () => window.clearInterval(id)
+  }, [backgrounds])
+
+  useEffect(() => {
+    if (activeBackground === displayBackground) return
+    setFadingBackground(displayBackground)
+    setDisplayBackground(activeBackground)
+    setBackgroundVisible(false)
+    let cancelled = false
+    const raf = window.requestAnimationFrame(() => {
+      if (!cancelled) setBackgroundVisible(true)
+    })
+    const clearId = window.setTimeout(() => {
+      if (!cancelled) setFadingBackground(undefined)
+    }, BACKGROUND_FADE_MS + 120)
+    return () => {
+      cancelled = true
+      window.cancelAnimationFrame(raf)
+      window.clearTimeout(clearId)
+    }
+  }, [activeBackground, displayBackground])
+
+  useEffect(() => {
+    if (displayBackground === undefined) {
       setPhotoNatural(null)
       return
     }
@@ -370,13 +433,13 @@ export function PetPanel({ t, useSessions }: PetPanelProps) {
     image.onerror = () => {
       if (!disposed) setPhotoNatural(null)
     }
-    image.src = pet.background
+    image.src = displayBackground
     return () => { disposed = true }
-  }, [pet?.background])
+  }, [displayBackground])
 
   useEffect(() => {
     const node = cardRef.current
-    if (node === null || pet?.background === undefined) {
+    if (node === null || displayBackground === undefined) {
       setCardSize({ width: 0, height: 0 })
       return
     }
@@ -391,14 +454,14 @@ export function PetPanel({ t, useSessions }: PetPanelProps) {
     const observer = new ResizeObserver(updateSize)
     observer.observe(node)
     return () => observer.disconnect()
-  }, [pet?.background])
+  }, [displayBackground])
 
   useEffect(() => {
     const layer = photoLayerRef.current
     if (layer === null) return
     layer.getAnimations().forEach(animation => animation.cancel())
     layer.style.backgroundPosition = '50% 50%'
-    if (pet?.background === undefined || photoNatural === null || cardSize.width <= 0 || cardSize.height <= 0) return
+    if (displayBackground === undefined || photoNatural === null || cardSize.width <= 0 || cardSize.height <= 0) return
     const coverScale = Math.max(cardSize.width / photoNatural.width, cardSize.height / photoNatural.height)
     const coverWidth = photoNatural.width * coverScale
     const coverHeight = photoNatural.height * coverScale
@@ -430,7 +493,7 @@ export function PetPanel({ t, useSessions }: PetPanelProps) {
       easing: 'cubic-bezier(0.38, 0.02, 0.2, 1)',
     })
     return () => animation.cancel()
-  }, [pet?.background, photoNatural, cardSize])
+  }, [displayBackground, photoNatural, cardSize])
 
   const persona = PERSONAS[pet?.persona ?? DEFAULT_PERSONA] ?? PERSONAS[DEFAULT_PERSONA]
 
@@ -736,6 +799,7 @@ export function PetPanel({ t, useSessions }: PetPanelProps) {
         mood: 'happy',
         persona: personaId,
         tokenCredit: 0,
+        personaSwitchCount: 0,
         observedTokens: observedFromPeek(peek),
       })
       setHatching(false)
@@ -756,7 +820,8 @@ export function PetPanel({ t, useSessions }: PetPanelProps) {
   const switchPersona = useCallback(() => {
     setPet(current => {
       if (current === null) return current
-      if (current.tokenCredit < TOKENS_PER_PERSONA) return current
+      const needsTokens = current.personaSwitchCount >= 1
+      if (needsTokens && current.tokenCredit < TOKENS_PER_PERSONA) return current
       const personaId = randomPersonaId(current.persona)
       const next = PERSONAS[personaId] ?? PERSONAS[DEFAULT_PERSONA]
       speakFor(next.id, 'hello')
@@ -768,7 +833,8 @@ export function PetPanel({ t, useSessions }: PetPanelProps) {
         mood: 'happy',
         persona: next.id,
         avatar: undefined,
-        tokenCredit: current.tokenCredit - TOKENS_PER_PERSONA,
+        tokenCredit: needsTokens ? current.tokenCredit - TOKENS_PER_PERSONA : current.tokenCredit,
+        personaSwitchCount: current.personaSwitchCount + 1,
       }
     })
     setMenuOpen(false)
@@ -845,6 +911,33 @@ export function PetPanel({ t, useSessions }: PetPanelProps) {
     event.target.value = ''
   }, [])
 
+  const pickImages = useCallback((
+    event: React.ChangeEvent<HTMLInputElement>,
+    onDone: (dataUrls: string[]) => void,
+  ) => {
+    const files = Array.from(event.target.files ?? [])
+    if (files.length === 0) {
+      event.target.value = ''
+      return
+    }
+    const outputs: string[] = []
+    let index = 0
+    const next = () => {
+      const file = files[index++]
+      if (file === undefined) {
+        onDone(outputs)
+        event.target.value = ''
+        return
+      }
+      const fakeEvent = { target: { files: [file], value: '' } } as unknown as React.ChangeEvent<HTMLInputElement>
+      pickImage(fakeEvent, (dataUrl) => {
+        outputs.push(dataUrl)
+        next()
+      })
+    }
+    next()
+  }, [pickImage])
+
   const onPickAvatar = useCallback((event: React.ChangeEvent<HTMLInputElement>) => {
     pickImage(event, (dataUrl) => {
       setPet(current => (current === null ? current : { ...current, avatar: dataUrl }))
@@ -853,11 +946,20 @@ export function PetPanel({ t, useSessions }: PetPanelProps) {
   }, [pickImage])
 
   const onPickBackground = useCallback((event: React.ChangeEvent<HTMLInputElement>) => {
-    pickImage(event, (dataUrl) => {
-      setPet(current => (current === null ? current : { ...current, background: dataUrl }))
+    pickImages(event, (dataUrls) => {
+      setPet(current => {
+        if (current === null) return current
+        const existing = current.backgrounds ?? []
+        const slots = Math.max(0, BACKGROUND_MAX_ITEMS - existing.length)
+        const appended = dataUrls.slice(0, slots)
+        return {
+          ...current,
+          backgrounds: [...existing, ...appended],
+        }
+      })
     })
     setMenuOpen(false)
-  }, [pickImage])
+  }, [pickImages])
 
   const uploadAvatar = useCallback(() => {
     setMenuOpen(false)
@@ -876,7 +978,8 @@ export function PetPanel({ t, useSessions }: PetPanelProps) {
 
   const clearBackground = useCallback(() => {
     setMenuOpen(false)
-    setPet(current => (current === null ? current : { ...current, background: undefined }))
+    setPet(current => (current === null ? current : { ...current, backgrounds: [] }))
+    setBackgroundIndex(0)
   }, [])
 
   const pickSession = useCallback((id: SessionRow['id']) => {
@@ -912,11 +1015,16 @@ export function PetPanel({ t, useSessions }: PetPanelProps) {
   const statusGlyph = promptStage === 'error' || promptStage === 'crash' ? '⚠️' : busy ? '…' : '✓'
   const tokens = peek?.tokens ?? 0
   const tokenCredit = pet?.tokenCredit ?? 0
-  const canSwitchPersona = tokenCredit >= TOKENS_PER_PERSONA
-  const switchRemaining = Math.max(0, TOKENS_PER_PERSONA - tokenCredit)
+  const personaSwitchCount = pet?.personaSwitchCount ?? 0
+  const firstSwitchFree = personaSwitchCount < 1
+  const canSwitchPersona = firstSwitchFree || tokenCredit >= TOKENS_PER_PERSONA
+  const switchRemaining = firstSwitchFree ? 0 : Math.max(0, TOKENS_PER_PERSONA - tokenCredit)
   const switchProgress = Math.min(tokenCredit, TOKENS_PER_PERSONA)
-  const photoCardStyle = pet.background !== undefined
-    ? ({ '--pet-card-photo': `url(${pet.background})` } as CSSProperties)
+  const photoCardStyle = displayBackground !== undefined
+    ? ({ '--pet-card-photo': `url(${displayBackground})` } as CSSProperties)
+    : undefined
+  const fadingPhotoCardStyle = fadingBackground !== undefined
+    ? ({ '--pet-card-photo': `url(${fadingBackground})` } as CSSProperties)
     : undefined
 
   // Theme variables from the adopted persona (accent colors + fallback face).
@@ -974,11 +1082,19 @@ export function PetPanel({ t, useSessions }: PetPanelProps) {
           The uploaded background image (if any) is used as the card background. */}
       <div
         ref={cardRef}
-        className={pet.background !== undefined ? `${css.card} ${css.cardPhoto ?? ''}` : css.card}
+        className={displayBackground !== undefined ? `${css.card} ${css.cardPhoto ?? ''}` : css.card}
       >
-        {pet.background !== undefined && <div ref={photoLayerRef} className={css.cardPhotoLayer} style={photoCardStyle} aria-hidden />}
+        {fadingBackground !== undefined && <div className={`${css.cardPhotoLayer} ${css.cardPhotoLayerPrev ?? ''}`} style={fadingPhotoCardStyle} aria-hidden />}
+        {displayBackground !== undefined && (
+          <div
+            ref={photoLayerRef}
+            className={`${css.cardPhotoLayer} ${css.cardPhotoLayerCurrent ?? ''} ${backgroundVisible ? (css.cardPhotoLayerVisible ?? '') : ''}`}
+            style={photoCardStyle}
+            aria-hidden
+          />
+        )}
         <div className={css.cardContentRow}>
-          <div className={pet.background !== undefined ? `${css.cardBody} ${css.cardBodyGlass ?? ''}` : css.cardBody}>
+          <div className={displayBackground !== undefined ? `${css.cardBody} ${css.cardBodyGlass ?? ''}` : css.cardBody}>
             <div className={css.cardTitle}>{pet.name}</div>
             {cardInfo !== null && <div className={css.cardText}>{cardInfo}</div>}
             <div className={css.cardQuip}>{cardQuip}</div>
@@ -1081,6 +1197,7 @@ export function PetPanel({ t, useSessions }: PetPanelProps) {
         ref={bgInput}
         type="file"
         accept="image/*"
+        multiple
         className={css.hiddenInput}
         onChange={onPickBackground}
       />
@@ -1092,13 +1209,26 @@ export function PetPanel({ t, useSessions }: PetPanelProps) {
           {pet.avatar !== undefined && (
             <button type="button" className={css.menuItem} onClick={clearAvatar}>{t('panel.clearAvatar')}</button>
           )}
-          <button type="button" className={css.menuItem} onClick={uploadBackground}>{t('panel.background')}</button>
-          {pet.background !== undefined && (
+          <button
+            type="button"
+            className={css.menuItem}
+            onClick={uploadBackground}
+            disabled={backgrounds.length >= BACKGROUND_MAX_ITEMS}
+          >
+            {t('panel.background', { count: backgrounds.length, max: BACKGROUND_MAX_ITEMS })}
+          </button>
+          {backgrounds.length > 0 && (
             <button type="button" className={css.menuItem} onClick={clearBackground}>{t('panel.clearBackground')}</button>
           )}
-          <div className={css.menuHint}>{t('panel.personaProgress', { count: shortTokens(switchProgress) })}</div>
+          <div className={css.menuHint}>
+            {firstSwitchFree
+              ? t('panel.personaFirstFree')
+              : t('panel.personaProgress', { count: shortTokens(switchProgress) })}
+          </div>
           <button type="button" className={css.menuItem} onClick={switchPersona} disabled={!canSwitchPersona}>
-            {canSwitchPersona ? t('panel.persona') : t('panel.personaLocked', { count: shortTokens(switchRemaining) })}
+            {canSwitchPersona
+              ? t('panel.persona')
+              : t('panel.personaLocked', { count: shortTokens(switchRemaining) })}
           </button>
           <button type="button" className={css.menuItem} onClick={rename}>{t('panel.rename')}</button>
         </div>
