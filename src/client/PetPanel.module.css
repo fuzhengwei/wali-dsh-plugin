@@ -44,6 +44,14 @@
   animation: pet-card-in 0.32s cubic-bezier(0.34, 1.56, 0.64, 1);
 }
 
+/* Main content row: glass panel on the left, status dot on the right, vertically centered. */
+.cardContentRow {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex: 1 1 auto;
+}
+
 /* Small pointer triangle from the card toward the robot below. */
 .card::after {
   content: '';
@@ -321,19 +329,15 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  flex: 0 0 24px;
+  flex: 0 0 auto;
   width: 24px;
   height: 24px;
-  position: absolute;
-  top: 12px;
-  right: 12px;
   border-radius: 50%;
   font-size: 13px;
   line-height: 1;
   background: radial-gradient(circle at 35% 30%, #52d98c, #2fbf71);
   color: #fff;
   box-shadow: 0 2px 6px rgba(47, 191, 113, 0.4);
-  z-index: 1;
 }
 
 /* ---- The robot body ---- */
