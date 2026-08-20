@@ -123,6 +123,28 @@ function randomPersonaId(except?: PersonaId): PersonaId {
   return options[Math.floor(Math.random() * options.length)]?.id ?? DEFAULT_PERSONA
 }
 
+/** Starter pet for first-time installs so the plugin is visible immediately. */
+function createStarterPet(name: string): PetState {
+  return {
+    name,
+    level: 1,
+    affinity: AFFINITY_START,
+    mood: 'happy',
+    persona: DEFAULT_PERSONA,
+    tokenCredit: 0,
+    observedTokens: {},
+  }
+}
+
+/** Start near the lower-right workspace area, not inside the left sidebar. */
+function initialPosition(): { x: number; y: number } {
+  if (typeof window === 'undefined') return { x: 120, y: 320 }
+  return {
+    x: Math.max(24, window.innerWidth - 180),
+    y: Math.max(96, window.innerHeight - 240),
+  }
+}
+
 /** Idle span before the pet proactively speaks up (nudges the user). */
 const IDLE_PROMPT_MS = 45_000
 
@@ -262,12 +284,12 @@ function shapeParts(shape: PetShape): React.ReactNode {
 }
 
 /** Read the persisted pet, tolerating absent/broken storage. */
-function loadPet(): PetState | null {
+function loadPet(fallbackName: string): PetState {
   try {
     const raw = window.localStorage.getItem(STORAGE_KEY)
-    if (raw === null) return null
+    if (raw === null) return createStarterPet(fallbackName)
     const parsed = JSON.parse(raw) as PetState
-    if (typeof parsed.name !== 'string') return null
+    if (typeof parsed.name !== 'string') return createStarterPet(fallbackName)
       return {
         ...parsed,
         persona: asPersonaId(parsed.persona),
@@ -277,7 +299,7 @@ function loadPet(): PetState | null {
         observedTokens: sanitizeObservedTokens(parsed.observedTokens),
       }
   } catch {
-    return null
+    return createStarterPet(fallbackName)
   }
 }
 
@@ -301,7 +323,7 @@ export type PetPanelProps = PropsRuntime<'shell.overlay'> & PropsLocale<'pet'>
 
 /** Render the draggable robot pet with persona quips, an info card, and a session switcher. */
 export function PetPanel({ t, useSessions }: PetPanelProps) {
-  const [pet, setPet] = useState<PetState | null>(() => loadPet())
+  const [pet, setPet] = useState<PetState | null>(() => loadPet(t(PERSONAS[DEFAULT_PERSONA].nameKey)))
   const [excited, setExcited] = useState(false)
   const [cheer, setCheer] = useState<string | null>(null)
   const [menuOpen, setMenuOpen] = useState(false)
@@ -310,7 +332,7 @@ export function PetPanel({ t, useSessions }: PetPanelProps) {
   const [hatching, setHatching] = useState(false)
   const [promptStage, setPromptStage] = useState<PromptStage>('ready')
   // Position in px from the left/top of the viewport, plus facing direction.
-  const [pos, setPos] = useState<{ x: number; y: number }>(() => ({ x: 120, y: 320 }))
+  const [pos, setPos] = useState<{ x: number; y: number }>(() => initialPosition())
   const [facing, setFacing] = useState<1 | -1>(1)
   const [walking, setWalking] = useState(false)
   const [dragging, setDragging] = useState(false)
