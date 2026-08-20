@@ -1,0 +1,17 @@
+# Composable bundle patch for wali-dsh-plugin.
+#
+# This file is declared via `dsh.bundle.patch` in package.json. When a user
+# runs `dsh plugin --profile <name> add <this-package>`, dsh reads that
+# declaration and automatically appends this bundle to the profile's
+# `dsh.profile.bundles`, activating the patch layer below — no edits to the
+# dsh source tree are required.
+#
+# The row is inserted into the browser roster (a `dsh.client` row) that the
+# web-app modules node scans into window.__DSH_BOOT__. `name` must be the
+# published package name so Node module resolution can locate the installed
+# client half; it must NOT be a relative source path.
+
+- insert:
+    # Free-roaming desktop pet floating over the whole app (dual-face plugin).
+    - id: ui-pet
+      name: 'wali-dsh-plugin'

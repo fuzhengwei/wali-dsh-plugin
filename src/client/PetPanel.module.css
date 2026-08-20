@@ -1,0 +1,785 @@
+/* Free-roaming robot pet: a fixed, click-through sprite that strolls over the whole app. */
+
+.roamer {
+  position: fixed;
+  z-index: 2147483000;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  /* Persona theme colors, overridden inline; default to the northeast blue. */
+  --pet-accent: #3b82f6;
+  --pet-accent2: #60a5fa;
+  /* Smoothly stroll toward each new target position. */
+  transition: left 2.6s cubic-bezier(0.37, 0, 0.63, 1), top 2.6s cubic-bezier(0.37, 0, 0.63, 1);
+  /* Container never blocks the app; interactive parts opt back in below. */
+  pointer-events: none;
+  user-select: none;
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
+}
+
+/* While dragging, follow the pointer 1:1 with no easing lag. */
+.dragActive {
+  transition: none;
+}
+
+/* ---- Head info card (floats above the robot) ---- */
+
+.card {
+  position: relative;
+  display: flex;
+  align-items: stretch;
+  gap: 10px;
+  max-width: 236px;
+  padding: 9px 12px;
+  border-radius: 16px;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.96) 0%, rgba(245, 248, 255, 0.96) 100%);
+  color: #1c2333;
+  box-shadow: 0 10px 28px rgba(24, 39, 75, 0.22), 0 2px 6px rgba(24, 39, 75, 0.12);
+  border: 1px solid rgba(120, 150, 220, 0.28);
+  backdrop-filter: blur(8px);
+  pointer-events: auto;
+  animation: pet-card-in 0.32s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+/* Small pointer triangle from the card toward the robot below. */
+.card::after {
+  content: '';
+  position: absolute;
+  left: 50%;
+  bottom: -7px;
+  width: 14px;
+  height: 14px;
+  transform: translateX(-50%) rotate(45deg);
+  background: rgba(245, 248, 255, 0.96);
+  border-right: 1px solid rgba(120, 150, 220, 0.28);
+  border-bottom: 1px solid rgba(120, 150, 220, 0.28);
+}
+
+.cardBody {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+/* When a photo background is set: drop the solid gradient so the image shows through clearly. */
+.cardPhoto {
+  background: transparent;
+}
+.cardPhoto::after {
+  background: rgba(255, 255, 255, 0.72);
+}
+
+/* Frosted-glass text panel: keeps text readable while the photo stays visible behind it. */
+.cardBodyGlass {
+  padding: 6px 8px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.72);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+  box-shadow: 0 1px 4px rgba(24, 39, 75, 0.12);
+}
+
+.cardTitle {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  color: #4f6bd6;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.cardText {
+  font-size: 12px;
+  line-height: 1.4;
+  color: #1c2333;
+  white-space: normal;
+  word-break: break-word;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+/* Persona quip line: a softer, italic aside under the real conversation info. */
+.cardQuip {
+  margin-top: 2px;
+  font-size: 11px;
+  line-height: 1.35;
+  font-style: italic;
+  color: #7a86a8;
+  white-space: normal;
+  word-break: break-word;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.food {
+  display: inline-flex;
+  align-items: center;
+  align-self: flex-start;
+  gap: 3px;
+  margin-top: 3px;
+  padding: 1px 7px;
+  font-size: 10px;
+  font-weight: 700;
+  color: #b96a12;
+  background: linear-gradient(180deg, #fff3df, #ffe6c2);
+  border-radius: 999px;
+  border: 1px solid rgba(217, 130, 43, 0.3);
+}
+
+/* Row under the card text holding the food pill + sessions toggle. */
+.cardMeta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-top: 4px;
+}
+
+.cardMeta .food { margin-top: 0; }
+
+/* Clickable pill that opens the stacked session switcher. */
+.sessionsToggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 1px 8px;
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--pet-accent);
+  background: color-mix(in srgb, var(--pet-accent) 12%, #fff);
+  border: 1px solid color-mix(in srgb, var(--pet-accent) 32%, transparent);
+  border-radius: 999px;
+  cursor: pointer;
+  pointer-events: auto;
+  transition: background 0.15s ease, transform 0.1s ease;
+}
+
+.sessionsToggle:hover {
+  background: color-mix(in srgb, var(--pet-accent) 20%, #fff);
+}
+
+.sessionsToggle:active { transform: scale(0.96); }
+
+/* ---- Stacked, switchable conversation cards ---- */
+
+.sessions {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  width: 236px;
+  max-height: 232px;
+  overflow-y: auto;
+  padding: 8px;
+  border-radius: 14px;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.97), rgba(244, 247, 255, 0.97));
+  border: 1px solid rgba(120, 150, 220, 0.3);
+  box-shadow: 0 12px 30px rgba(24, 39, 75, 0.26);
+  backdrop-filter: blur(8px);
+  pointer-events: auto;
+  animation: pet-menu-in 0.22s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+.sessionsTitle {
+  padding: 2px 6px 6px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  color: var(--pet-accent);
+  border-bottom: 1px solid rgba(120, 150, 220, 0.18);
+  margin-bottom: 2px;
+}
+
+.sessionRow {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid transparent;
+  border-radius: 10px;
+  background: rgba(240, 244, 255, 0.7);
+  color: #1c2333;
+  font-size: 12px;
+  font-weight: 600;
+  text-align: left;
+  cursor: pointer;
+  pointer-events: auto;
+  transition: background 0.15s ease, transform 0.1s ease, border-color 0.15s ease;
+}
+
+.sessionRow:hover {
+  background: color-mix(in srgb, var(--pet-accent) 14%, #fff);
+}
+
+.sessionRow:active { transform: scale(0.98); }
+
+.sessionCurrent {
+  border-color: var(--pet-accent);
+  background: color-mix(in srgb, var(--pet-accent) 18%, #fff);
+  color: var(--pet-accent);
+}
+
+.sessionDot {
+  flex: 0 0 auto;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #52d98c;
+  box-shadow: 0 0 6px rgba(82, 217, 140, 0.9);
+  animation: pet-pulse 1.4s ease-in-out infinite;
+}
+
+.sessionLabel {
+  min-width: 0;
+  flex: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ---- Adoption picker (before a pet exists) ---- */
+
+.adopt {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px;
+  border-radius: 18px;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.97), rgba(244, 247, 255, 0.97));
+  border: 1px solid rgba(120, 150, 220, 0.3);
+  box-shadow: 0 14px 34px rgba(24, 39, 75, 0.28);
+  backdrop-filter: blur(8px);
+  pointer-events: auto;
+  animation: pet-card-in 0.34s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+.adoptTitle {
+  font-size: 12px;
+  font-weight: 700;
+  color: #1c2333;
+  text-align: center;
+}
+
+.adoptRow {
+  display: flex;
+  gap: 10px;
+}
+
+.adoptCard {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  width: 74px;
+  padding: 12px 8px;
+  border: 1px solid color-mix(in srgb, var(--pet-accent) 30%, transparent);
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--pet-accent) 10%, #fff);
+  cursor: pointer;
+  pointer-events: auto;
+  transition: transform 0.12s ease, box-shadow 0.15s ease;
+}
+
+.adoptCard:hover {
+  transform: translateY(-3px);
+  box-shadow: 0 8px 18px color-mix(in srgb, var(--pet-accent) 40%, transparent);
+}
+
+.adoptCard:active { transform: scale(0.97); }
+
+.adoptFace {
+  font-size: 30px;
+  line-height: 1;
+}
+
+.adoptName {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--pet-accent);
+  white-space: nowrap;
+}
+
+.cardStatus {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 24px;
+  width: 24px;
+  height: 24px;
+  align-self: center;
+  border-radius: 50%;
+  font-size: 13px;
+  line-height: 1;
+  background: radial-gradient(circle at 35% 30%, #52d98c, #2fbf71);
+  color: #fff;
+  box-shadow: 0 2px 6px rgba(47, 191, 113, 0.4);
+}
+
+/* ---- The robot body ---- */
+
+.robot {
+  position: relative;
+  width: 96px;
+  height: 108px;
+  border: none;
+  background: transparent;
+  cursor: grab;
+  pointer-events: auto;
+  transform-origin: center bottom;
+  touch-action: none;
+  will-change: transform;
+  padding: 0;
+  filter: drop-shadow(0 8px 10px rgba(24, 39, 75, 0.3));
+  animation: pet-breathe 3.2s ease-in-out infinite;
+}
+
+/* ---- Skeleton rig: head + face + body + arms + legs + per-shape decorations ---- */
+
+/* Head: rounded blue block with the terminal face or the avatar. */
+.head {
+  position: absolute;
+  top: 0;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 66px;
+  height: 50px;
+  border-radius: 18px;
+  background: linear-gradient(160deg, var(--pet-accent2) 0%, var(--pet-accent) 100%);
+  box-shadow: inset 0 -5px 0 rgba(0, 0, 0, 0.12), inset 0 3px 5px rgba(255, 255, 255, 0.35);
+}
+
+/* Glossy highlight on the head. */
+.head::after {
+  content: '';
+  position: absolute;
+  top: 6px;
+  left: 10px;
+  width: 20px;
+  height: 10px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.4);
+  filter: blur(1px);
+}
+
+/* Little antenna dot. */
+.head::before {
+  content: '';
+  position: absolute;
+  top: -10px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--pet-accent2);
+  box-shadow: 0 -5px 0 -1px var(--pet-accent), 0 0 8px var(--pet-accent2);
+  animation: pet-antenna 2.4s ease-in-out infinite;
+}
+
+/* Cartoon animal face base: two eyes over a mouth; per-shape parts overlay it. */
+.face {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  width: 46px;
+  height: 30px;
+}
+
+.eye {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #10233f;
+  box-shadow: inset 0 -1px 0 rgba(255, 255, 255, 0.5), 0 0 4px rgba(180, 220, 255, 0.6);
+}
+
+.mouth {
+  position: absolute;
+  left: 50%;
+  bottom: 1px;
+  transform: translateX(-50%);
+  width: 20px;
+  height: 10px;
+  border: 2px solid #10233f;
+  border-top: none;
+  border-radius: 0 0 20px 20px;
+}
+
+/* Low bond → flip the smile into a frown. */
+.mouthSad {
+  bottom: -3px;
+  border: 2px solid #10233f;
+  border-bottom: none;
+  border-radius: 20px 20px 0 0;
+}
+
+/* Cancel the parent's facing mirror so the face/avatar never appears reversed. */
+.faceUnflip {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.avatar {
+  width: 42px;
+  height: 42px;
+  border-radius: 12px;
+  object-fit: cover;
+  border: 2px solid rgba(255, 255, 255, 0.9);
+  box-shadow: 0 2px 5px rgba(0, 0, 0, 0.25);
+}
+
+/* Low-bond flush: the head reddens (aggrieved/angry) and gets a warm glow.
+   Only the head background shifts — the avatar image keeps its own colors. */
+.blush {
+  background: linear-gradient(160deg, #ff9a7a 0%, #e2452f 100%);
+  box-shadow:
+    inset 0 -5px 0 rgba(0, 0, 0, 0.12),
+    inset 0 3px 5px rgba(255, 255, 255, 0.35),
+    0 0 12px rgba(226, 69, 47, 0.55);
+  animation: pet-blush 1.6s ease-in-out infinite;
+}
+
+/* Rosy cheeks either side of the face while flushed. */
+.blush .eye {
+  box-shadow: inset 0 -1px 0 rgba(255, 255, 255, 0.5), 0 0 4px rgba(255, 180, 160, 0.8);
+}
+
+/* ---- Per-shape cartoon decorations. All use --accent / --accent2 from inline. ---- */
+
+/* Shared ear (tiger/cat): triangle-ish rounded nub poking above the head. */
+.earLeft, .earRight {
+  position: absolute;
+  top: -12px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50% 50% 0 50%;
+  background: var(--accent, #f0a04b);
+  box-shadow: inset 0 -2px 0 rgba(0, 0, 0, 0.12);
+}
+.earLeft { left: -2px; transform: rotate(-18deg); }
+.earRight { right: -2px; transform: rotate(18deg) scaleX(-1); }
+
+/* Cat/dragon whiskers: thin lines either side of the mouth. */
+.whiskerLeft, .whiskerRight {
+  position: absolute;
+  bottom: 4px;
+  width: 14px;
+  height: 2px;
+  border-radius: 2px;
+  background: rgba(16, 35, 63, 0.55);
+}
+.whiskerLeft { left: -14px; transform: rotate(8deg); }
+.whiskerRight { right: -14px; transform: rotate(-8deg); }
+
+/* Tiger stripes across the forehead. */
+.stripeA, .stripeB {
+  position: absolute;
+  top: -2px;
+  width: 3px;
+  height: 12px;
+  border-radius: 3px;
+  background: rgba(16, 35, 63, 0.55);
+}
+.stripeA { left: 14px; transform: rotate(-14deg); }
+.stripeB { right: 14px; transform: rotate(14deg); }
+
+/* Dragon horns: pointy nubs angled outward. */
+.hornLeft, .hornRight {
+  position: absolute;
+  top: -14px;
+  width: 8px;
+  height: 16px;
+  border-radius: 40% 40% 0 0;
+  background: var(--accent2, #ffd76a);
+}
+.hornLeft { left: 6px; transform: rotate(-20deg); }
+.hornRight { right: 6px; transform: rotate(20deg); }
+
+/* Turtle shell: a domed patch behind the little head. */
+.shell {
+  position: absolute;
+  top: -16px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 40px;
+  height: 26px;
+  border-radius: 20px 20px 8px 8px;
+  background: radial-gradient(circle at 50% 30%, var(--accent2, #8fd694), var(--accent, #3f9a53));
+  box-shadow: inset 0 -3px 0 rgba(0, 0, 0, 0.14);
+}
+
+/* Fish top fin + tail. */
+.finTop {
+  position: absolute;
+  top: -14px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 0;
+  height: 0;
+  border-left: 9px solid transparent;
+  border-right: 9px solid transparent;
+  border-bottom: 14px solid var(--accent, #4aa3d6);
+}
+.tail {
+  position: absolute;
+  right: -16px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 0;
+  height: 0;
+  border-top: 11px solid transparent;
+  border-bottom: 11px solid transparent;
+  border-left: 16px solid var(--accent, #4aa3d6);
+}
+
+/* Ox horns: wide curved horns; plus a nose ring under the mouth. */
+.oxHornLeft, .oxHornRight {
+  position: absolute;
+  top: -10px;
+  width: 18px;
+  height: 12px;
+  border: 3px solid var(--accent2, #efe3d0);
+  border-bottom: none;
+}
+.oxHornLeft { left: -6px; border-radius: 20px 0 0 0; border-right: none; transform: rotate(-8deg); }
+.oxHornRight { right: -6px; border-radius: 0 20px 0 0; border-left: none; transform: rotate(8deg); }
+.noseRing {
+  position: absolute;
+  bottom: -8px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 10px;
+  height: 10px;
+  border: 2px solid rgba(16, 35, 63, 0.6);
+  border-radius: 50%;
+}
+
+/* Shape marker classes: applied to the .robot button so CSS-Module lookup by
+   persona.shape resolves. They carry no layout of their own — the per-shape
+   silhouette comes from the decoration parts (shell, fins, horns, …). */
+.tiger, .dragon, .cat, .turtle, .fish, .ox { position: relative; }
+
+@keyframes pet-blush {
+  0%, 100% { filter: brightness(1); }
+  50% { filter: brightness(1.12); }
+}
+
+/* Body: rounded torso below the head, with a tiny status light. */
+.body {
+  position: absolute;
+  top: 48px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 58px;
+  height: 44px;
+  border-radius: 14px;
+  background: linear-gradient(160deg, var(--pet-accent2) 0%, var(--pet-accent) 100%);
+  box-shadow: inset 0 -5px 0 rgba(0, 0, 0, 0.1), inset 0 3px 5px rgba(255, 255, 255, 0.3);
+}
+
+.body::before {
+  content: '';
+  position: absolute;
+  top: 12px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #b6ff9b;
+  box-shadow: 0 0 7px rgba(150, 255, 130, 0.9);
+  animation: pet-pulse 2s ease-in-out infinite;
+}
+
+/* Arms. */
+.armLeft, .armRight {
+  position: absolute;
+  top: 54px;
+  width: 11px;
+  height: 28px;
+  border-radius: 7px;
+  background: linear-gradient(180deg, var(--pet-accent2), var(--pet-accent));
+  transform-origin: top center;
+}
+
+.armLeft { left: 7px; }
+.armRight { right: 7px; }
+
+/* Legs. */
+.legLeft, .legRight {
+  position: absolute;
+  bottom: 0;
+  width: 13px;
+  height: 22px;
+  border-radius: 6px;
+  background: linear-gradient(180deg, var(--pet-accent), var(--pet-accent));
+  transform-origin: top center;
+}
+
+.legLeft { left: 31px; }
+.legRight { right: 31px; }
+
+/* ---- Tap menu (below the robot) ---- */
+
+.menu {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 150px;
+  padding: 6px;
+  border-radius: 14px;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.97), rgba(244, 247, 255, 0.97));
+  border: 1px solid rgba(120, 150, 220, 0.3);
+  box-shadow: 0 12px 30px rgba(24, 39, 75, 0.26);
+  backdrop-filter: blur(8px);
+  pointer-events: auto;
+  animation: pet-menu-in 0.22s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+.menuName {
+  padding: 4px 10px 6px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  color: #4f6bd6;
+  border-bottom: 1px solid rgba(120, 150, 220, 0.18);
+  margin-bottom: 2px;
+}
+
+.menuItem {
+  display: block;
+  width: 100%;
+  padding: 7px 10px;
+  border: none;
+  border-radius: 9px;
+  background: transparent;
+  color: #1c2333;
+  font-size: 12px;
+  font-weight: 600;
+  text-align: left;
+  cursor: pointer;
+  pointer-events: auto;
+  transition: background 0.15s ease, transform 0.1s ease;
+}
+
+.menuItem:hover {
+  background: linear-gradient(180deg, #eef3ff, #e2ebff);
+  color: #2f52c8;
+}
+
+.menuItem:active {
+  transform: scale(0.97);
+}
+
+/* ---- States & animations ---- */
+
+.walking { animation: pet-walk 0.6s ease-in-out infinite; }
+.walking .legLeft { animation: pet-step 0.6s ease-in-out infinite; }
+.walking .legRight { animation: pet-step 0.6s ease-in-out infinite reverse; }
+.walking .armLeft { animation: pet-swing 0.6s ease-in-out infinite; }
+.walking .armRight { animation: pet-swing 0.6s ease-in-out infinite reverse; }
+
+.excited { animation: pet-jump 0.6s ease-out 2; }
+.busy { animation: pet-focus 1.4s ease-in-out infinite; }
+
+/* While being dragged: lift shadow + grab cursor, stop idle animations.
+   (transform stays under inline scaleX for facing, so we only tweak shadow.) */
+.dragging {
+  animation: none;
+  cursor: grabbing;
+  filter: drop-shadow(0 16px 18px rgba(24, 39, 75, 0.4));
+}
+
+.hiddenInput { display: none; }
+
+.adoptBadge {
+  font-size: 32px;
+  line-height: 1;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  pointer-events: auto;
+  animation: pet-bob 2.4s ease-in-out infinite;
+  filter: drop-shadow(0 3px 4px rgba(0, 0, 0, 0.25));
+}
+
+/* ---- Keyframes ---- */
+
+@keyframes pet-breathe {
+  0%, 100% { transform: translateY(0) scale(1); }
+  50% { transform: translateY(-2px) scale(1.03); }
+}
+
+@keyframes pet-antenna {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+
+@keyframes pet-pulse {
+  0%, 100% { opacity: 1; transform: translateX(-50%) scale(1); }
+  50% { opacity: 0.6; transform: translateX(-50%) scale(0.82); }
+}
+
+@keyframes pet-walk {
+  0%, 100% { transform: translateY(0) rotate(-2deg); }
+  50% { transform: translateY(-5px) rotate(2deg); }
+}
+
+@keyframes pet-step {
+  0%, 100% { transform: rotate(-14deg); }
+  50% { transform: rotate(14deg); }
+}
+
+@keyframes pet-swing {
+  0%, 100% { transform: rotate(10deg); }
+  50% { transform: rotate(-10deg); }
+}
+
+@keyframes pet-jump {
+  0% { transform: translateY(0) scale(1); }
+  30% { transform: translateY(-16px) scale(1.08); }
+  60% { transform: translateY(0) scale(0.97); }
+  100% { transform: translateY(0) scale(1); }
+}
+
+@keyframes pet-focus {
+  0%, 100% { transform: translateY(0) rotate(0deg); }
+  50% { transform: translateY(-1px) rotate(1.5deg); }
+}
+
+@keyframes pet-bob {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-3px); }
+}
+
+@keyframes pet-card-in {
+  from { opacity: 0; transform: translateY(6px) scale(0.96); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+@keyframes pet-menu-in {
+  from { opacity: 0; transform: translateY(-6px) scale(0.96); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .roamer { transition: none; }
+  .robot, .walking, .excited, .busy, .adoptBadge, .card, .menu, .sessionDot,
+  .head::before, .body::before, .blush,
+  .walking .legLeft, .walking .legRight, .walking .armLeft, .walking .armRight {
+    animation: none;
+  }
+}
