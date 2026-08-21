@@ -799,6 +799,7 @@ export function PetPanel({ t, useSessions }: PetPanelProps) {
   const bgInput = useRef<HTMLInputElement | null>(null)
   const cardRef = useRef<HTMLDivElement | null>(null)
   const photoLayerRef = useRef<HTMLDivElement | null>(null)
+  const displayBackgroundRef = useRef<string | undefined>(undefined)
   // Drag bookkeeping: pointer origin, pet origin, and whether it became a drag.
   const drag = useRef<{ px: number; py: number; ox: number; oy: number; moved: boolean } | null>(null)
   const [photoNatural, setPhotoNatural] = useState<{ width: number; height: number } | null>(null)
@@ -895,10 +896,16 @@ export function PetPanel({ t, useSessions }: PetPanelProps) {
   }, [backgrounds, themeKind])
 
   useEffect(() => {
+    displayBackgroundRef.current = displayBackground
+  }, [displayBackground])
+
+  useEffect(() => {
     if (themeKind !== 'gallery') return
-    if (activeBackground === displayBackground) return
-    setFadingBackground(displayBackground)
+    const currentDisplay = displayBackgroundRef.current
+    if (activeBackground === currentDisplay) return
+    setFadingBackground(currentDisplay)
     setDisplayBackground(activeBackground)
+    displayBackgroundRef.current = activeBackground
     setBackgroundVisible(false)
     let cancelled = false
     const raf = window.requestAnimationFrame(() => {
@@ -912,7 +919,7 @@ export function PetPanel({ t, useSessions }: PetPanelProps) {
       window.cancelAnimationFrame(raf)
       window.clearTimeout(clearId)
     }
-  }, [activeBackground, displayBackground, themeKind])
+  }, [activeBackground, themeKind])
 
   useEffect(() => {
     if (themeKind !== 'gallery') {
