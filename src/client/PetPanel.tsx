@@ -24,6 +24,10 @@ import {
 import { pickFestivalGreeting } from './festivals.ts'
 import css from './PetPanel.module.css'
 
+function isInteractiveElement(target: EventTarget | null): boolean {
+  return target instanceof HTMLElement && target.closest('button, a, input, select, textarea, label') !== null
+}
+
 /** Persisted pet state. */
 interface PetState {
   readonly name: string
@@ -47,6 +51,47 @@ interface PetState {
   readonly avatar?: string
   /** Optional user-uploaded background images (base64 data URLs), up to 5 items. */
   readonly backgrounds?: readonly string[]
+  /** Active card theme: image gallery or stock K-line. */
+  readonly themeKind?: PetThemeKind
+  /** Optional stock-theme config; demo data is used until a live API is configured. */
+  readonly stockTheme?: StockThemeConfig
+}
+
+type PetThemeKind = 'gallery' | 'stock'
+type StockDataProvider = 'demo' | 'twelvedata'
+
+interface StockThemeConfig {
+  readonly provider: StockDataProvider
+  readonly symbol: string
+  readonly interval: '1day'
+  readonly refreshMs: number
+  readonly apiKey?: string
+}
+
+interface StockCandle {
+  readonly time: string
+  readonly open: number
+  readonly high: number
+  readonly low: number
+  readonly close: number
+  readonly volume: number
+}
+
+interface StockSnapshot {
+  readonly symbol: string
+  readonly label: string
+  readonly provider: StockDataProvider
+  readonly sourceLabel: string
+  readonly candles: readonly StockCandle[]
+  readonly latest: number
+  readonly previousClose: number
+  readonly change: number
+  readonly changePct: number
+  readonly high: number
+  readonly low: number
+  readonly volume: number
+  readonly updatedAt: string
+  readonly isDemo: boolean
 }
 
 const STORAGE_KEY = 'dsh-ui-pet:state'
@@ -65,6 +110,7 @@ const PEEK_TEXT_MAX = 36
 
 /** Max characters of an error message shown before truncating. */
 const PEEK_ERROR_MAX = 48
+const STOCK_ERROR_MAX = 60
 
 /** Max data-URL length we persist, to stay under localStorage quota (~5 MB). */
 const AVATAR_MAX_CHARS = 4_500_000
@@ -75,6 +121,17 @@ const AVATAR_ACCEPT = 'image/*'
 const BACKGROUND_MAX_ITEMS = 5
 const BACKGROUND_ROTATE_MS = 22_000
 const BACKGROUND_FADE_MS = 1_600
+const STOCK_POINTS = 42
+const STOCK_REFRESH_MS = 5 * 60_000
+const STOCK_TIMEOUT_MS = 8_000
+const STOCK_ROTATE_MS = 14_000
+const DEFAULT_STOCK_SYMBOL = 'AAPL'
+const TWELVE_DATA_API_KEYS_URL = 'https://twelvedata.com/account/api-keys'
+const PET_VIEWPORT_MARGIN = 16
+const ADOPTED_ROAMER_SIZE = { width: 280, height: 260 }
+const MENU_ROAMER_SIZE = { width: 520, height: 520 }
+const SESSIONS_ROAMER_SIZE = { width: 280, height: 360 }
+const UNADOPTED_ROAMER_SIZE = { width: 260, height: 220 }
 
 /** Pixels of pointer travel before a press counts as a drag (not a click). */
 const DRAG_THRESHOLD = 4
@@ -101,6 +158,17 @@ const AFFINITY_ON_ERROR = 15
 function excerpt(text: string, max: number = PEEK_TEXT_MAX): string {
   const flat = text.replace(/\s+/g, ' ').trim()
   return flat.length > max ? `${flat.slice(0, max)}…` : flat
+}
+
+function stockErrorText(error: string | null): string | null {
+  if (error === null) return null
+  const compact = error.replace(/\s+/g, ' ').trim()
+  if (compact === '') return null
+  if (compact === 'The user aborted a request.' || compact === 'signal is aborted without reason') {
+    return 'Twelve Data request timed out'
+  }
+  if (compact.includes('Failed to fetch')) return 'Browser request failed'
+  return excerpt(compact, STOCK_ERROR_MAX)
 }
 
 /** Humanize a token count into a short "food eaten" figure. */
@@ -130,6 +198,323 @@ function sanitizeBackgrounds(value: unknown): string[] {
     .slice(0, BACKGROUND_MAX_ITEMS)
 }
 
+function sanitizeThemeKind(value: unknown): PetThemeKind {
+  return value === 'stock' ? 'stock' : 'gallery'
+}
+
+function sanitizeStockTheme(value: unknown): StockThemeConfig {
+  if (typeof value !== 'object' || value === null) return createDefaultStockTheme()
+  const source = value as Record<string, unknown>
+  const symbol = typeof source.symbol === 'string' && source.symbol.trim() !== ''
+    ? parseStockSymbols(source.symbol).join(', ')
+    : DEFAULT_STOCK_SYMBOL
+  const apiKey = typeof source.apiKey === 'string' && source.apiKey.trim() !== '' ? source.apiKey.trim() : undefined
+  return {
+    provider: apiKey === undefined ? 'demo' : 'twelvedata',
+    symbol,
+    interval: '1day',
+    refreshMs: typeof source.refreshMs === 'number' && Number.isFinite(source.refreshMs)
+      ? clamp(Math.round(source.refreshMs), 30_000, 30 * 60_000)
+      : STOCK_REFRESH_MS,
+    apiKey,
+  }
+}
+
+function parseStockSymbols(input: string): string[] {
+  const items = input
+    .split(',')
+    .map(item => item.trim().toUpperCase())
+    .filter(item => item !== '')
+  return Array.from(new Set(items)).slice(0, 12)
+}
+
+function summarizeStockSymbols(symbols: readonly string[], activeIndex: number): string {
+  const active = symbols[activeIndex] ?? symbols[0] ?? DEFAULT_STOCK_SYMBOL
+  return symbols.length <= 1 ? active : `${active} +${symbols.length - 1}`
+}
+
+function createDefaultStockTheme(symbol: string = DEFAULT_STOCK_SYMBOL): StockThemeConfig {
+  return {
+    provider: 'demo',
+    symbol,
+    interval: '1day',
+    refreshMs: STOCK_REFRESH_MS,
+  }
+}
+
+function hashSeed(text: string): number {
+  let hash = 2166136261
+  for (const ch of text) {
+    hash ^= ch.charCodeAt(0)
+    hash = Math.imul(hash, 16777619)
+  }
+  return hash >>> 0
+}
+
+function createSeededRandom(seedText: string): () => number {
+  let seed = hashSeed(seedText) || 1
+  return () => {
+    seed = (seed * 1664525 + 1013904223) >>> 0
+    return seed / 0x100000000
+  }
+}
+
+function formatPrice(value: number): string {
+  const digits = value >= 1000 ? 0 : value >= 100 ? 1 : 2
+  return value.toFixed(digits)
+}
+
+function shortVolume(value: number): string {
+  if (value >= 1_000_000_000) return `${(value / 1_000_000_000).toFixed(1)}B`
+  if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}M`
+  if (value >= 1_000) return `${(value / 1000).toFixed(1)}k`
+  return String(Math.round(value))
+}
+
+function buildStockSnapshot(
+  candles: readonly StockCandle[],
+  symbol: string,
+  provider: StockDataProvider,
+  sourceLabel: string,
+  isDemo: boolean,
+): StockSnapshot {
+  const series = candles.slice(-STOCK_POINTS)
+  const latestCandle = series[series.length - 1] ?? { time: '', open: 0, high: 0, low: 0, close: 0, volume: 0 }
+  const previousCandle = series[series.length - 2] ?? latestCandle
+  const change = latestCandle.close - previousCandle.close
+  const changePct = previousCandle.close === 0 ? 0 : (change / previousCandle.close) * 100
+  return {
+    symbol,
+    label: symbol,
+    provider,
+    sourceLabel,
+    candles: series,
+    latest: latestCandle.close,
+    previousClose: previousCandle.close,
+    change,
+    changePct,
+    high: Math.max(...series.map(item => item.high)),
+    low: Math.min(...series.map(item => item.low)),
+    volume: latestCandle.volume,
+    updatedAt: latestCandle.time,
+    isDemo,
+  }
+}
+
+function generateDemoCandles(symbol: string): readonly StockCandle[] {
+  const random = createSeededRandom(symbol)
+  const items: StockCandle[] = []
+  const start = 90 + random() * 160
+  let lastClose = start
+  const baseVolume = 2_000_000 + Math.round(random() * 5_000_000)
+  for (let index = STOCK_POINTS + 8; index >= 0; index -= 1) {
+    const date = new Date()
+    date.setDate(date.getDate() - index)
+    const drift = (random() - 0.46) * 5.4
+    const swing = 1.2 + random() * 3.6
+    const open = Math.max(1, lastClose + (random() - 0.5) * 2.1)
+    const close = Math.max(1, open + drift)
+    const high = Math.max(open, close) + swing * (0.35 + random() * 0.6)
+    const low = Math.max(0.2, Math.min(open, close) - swing * (0.3 + random() * 0.55))
+    const volume = Math.round(baseVolume * (0.7 + random() * 0.8) * (1 + Math.abs(close - open) / 12))
+    items.push({
+      time: date.toISOString().slice(0, 10),
+      open: Number(open.toFixed(2)),
+      high: Number(high.toFixed(2)),
+      low: Number(low.toFixed(2)),
+      close: Number(close.toFixed(2)),
+      volume,
+    })
+    lastClose = close
+  }
+  return items
+}
+
+function normalizeCandles(input: unknown): StockCandle[] {
+  if (!Array.isArray(input)) return []
+  return input
+    .map((item): StockCandle | null => {
+      if (typeof item !== 'object' || item === null) return null
+      const row = item as Record<string, unknown>
+      const time = typeof row.time === 'string'
+        ? row.time
+        : typeof row.datetime === 'string'
+          ? row.datetime
+          : typeof row.date === 'string'
+            ? row.date
+            : ''
+      const open = Number(row.open)
+      const high = Number(row.high)
+      const low = Number(row.low)
+      const close = Number(row.close)
+      const volume = Number(row.volume ?? row.vol ?? 0)
+      if (time === '' || ![open, high, low, close].every(Number.isFinite)) return null
+      return {
+        time,
+        open,
+        high,
+        low,
+        close,
+        volume: Number.isFinite(volume) ? Math.max(0, Math.round(volume)) : 0,
+      }
+    })
+    .filter((item): item is StockCandle => item !== null)
+    .sort((left, right) => left.time.localeCompare(right.time))
+}
+
+function normalizeTwelveDataResponse(payload: unknown, config: StockThemeConfig): StockSnapshot | null {
+  if (typeof payload !== 'object' || payload === null) return null
+  const source = payload as Record<string, unknown>
+  if (typeof source.status === 'string' && source.status.toLowerCase() === 'error') {
+    const message = typeof source.message === 'string' ? source.message : 'Twelve Data returned an error'
+    throw new Error(message)
+  }
+  const meta = typeof source.meta === 'object' && source.meta !== null ? source.meta as Record<string, unknown> : {}
+  const candles = normalizeCandles(source.values)
+  if (candles.length < 2) return null
+  const symbol = typeof meta.symbol === 'string' && meta.symbol.trim() !== ''
+    ? meta.symbol.trim().toUpperCase()
+    : config.symbol
+  const exchange = typeof meta.exchange === 'string' && meta.exchange.trim() !== '' ? meta.exchange.trim() : 'Twelve Data'
+  const label = typeof meta.currency_base === 'string' && meta.currency_base.trim() !== ''
+    ? `${symbol}/${meta.currency_base.trim()}`
+    : symbol
+  const snapshot = buildStockSnapshot(candles, symbol, 'twelvedata', exchange, false)
+  return { ...snapshot, label }
+}
+
+async function fetchTwelveDataSnapshot(config: StockThemeConfig, signal: AbortSignal): Promise<StockSnapshot> {
+  if (config.apiKey === undefined || config.apiKey === '') throw new Error('Missing Twelve Data API key')
+  const query = new URLSearchParams({
+    apikey: config.apiKey,
+    symbol: config.symbol,
+    interval: config.interval,
+    outputsize: String(Math.max(60, STOCK_POINTS + 8)),
+    timezone: 'Asia/Shanghai',
+    previous_close: 'true',
+  })
+  const response = await fetch(`https://api.twelvedata.com/time_series?${query.toString()}`, { signal })
+  if (!response.ok) throw new Error(`Twelve Data HTTP ${response.status}`)
+  const payload = await response.json()
+  const snapshot = normalizeTwelveDataResponse(payload, config)
+  if (snapshot === null) throw new Error('Twelve Data response missing candle values')
+  return snapshot
+}
+
+async function loadStockSnapshot(config: StockThemeConfig): Promise<StockSnapshot> {
+  if (config.provider !== 'twelvedata' || config.apiKey === undefined) {
+    return buildStockSnapshot(generateDemoCandles(config.symbol), config.symbol, 'demo', 'Demo market tape', true)
+  }
+  const controller = new AbortController()
+  const timer = window.setTimeout(() => controller.abort(), STOCK_TIMEOUT_MS)
+  try {
+    return await fetchTwelveDataSnapshot(config, controller.signal)
+  } finally {
+    window.clearTimeout(timer)
+  }
+}
+
+function average(values: readonly number[]): number {
+  if (values.length === 0) return 0
+  return values.reduce((sum, item) => sum + item, 0) / values.length
+}
+
+function movingAverage(candles: readonly StockCandle[], period: number): number[] {
+  return candles.map((_, index) => {
+    const slice = candles.slice(Math.max(0, index - period + 1), index + 1)
+    return average(slice.map(item => item.close))
+  })
+}
+
+function buildPath(values: readonly number[], mapX: (index: number) => number, mapY: (value: number) => number): string {
+  return values.map((value, index) => `${index === 0 ? 'M' : 'L'} ${mapX(index).toFixed(1)} ${mapY(value).toFixed(1)}`).join(' ')
+}
+
+function renderStockChart(snapshot: StockSnapshot): React.ReactNode {
+  const candles = snapshot.candles
+  if (candles.length < 2) return null
+
+  const width = 280
+  const height = 140
+  const left = 12
+  const right = 12
+  const top = 12
+  const bottom = 14
+  const volumeHeight = 28
+  const plotTop = top + 12
+  const plotBottom = height - bottom - volumeHeight
+  const plotHeight = plotBottom - plotTop
+  const plotWidth = width - left - right
+  const gap = plotWidth / Math.max(1, candles.length - 1)
+  const candleWidth = Math.max(4, Math.min(8, gap * 0.58))
+  const highs = candles.map(item => item.high)
+  const lows = candles.map(item => item.low)
+  const maxHigh = Math.max(...highs)
+  const minLow = Math.min(...lows)
+  const pad = Math.max(1, (maxHigh - minLow) * 0.12)
+  const domainMin = minLow - pad
+  const domainMax = maxHigh + pad
+  const maxVolume = Math.max(...candles.map(item => item.volume), 1)
+  const ma5 = movingAverage(candles, 5)
+  const ma20 = movingAverage(candles, 20)
+  const mapX = (index: number) => left + index * gap
+  const mapY = (value: number) => plotTop + (domainMax - value) / Math.max(1, domainMax - domainMin) * plotHeight
+  const volumeTop = plotBottom + 8
+  const areaPath = `M ${mapX(0).toFixed(1)} ${plotBottom.toFixed(1)} ${buildPath(ma5, mapX, mapY).replace(/^M [^ ]+ [^ ]+/, `L ${mapX(0).toFixed(1)} ${mapY(ma5[0] ?? 0).toFixed(1)}`)} L ${mapX(candles.length - 1).toFixed(1)} ${plotBottom.toFixed(1)} Z`
+  const up = snapshot.change >= 0
+  const lastIndex = candles.length - 1
+  const lastCandle = candles[lastIndex]
+  const lastX = mapX(lastIndex)
+  const lastY = mapY(lastCandle?.close ?? 0)
+  const chartId = `pet-stock-${snapshot.symbol.toLowerCase().replace(/[^a-z0-9]+/g, '-')}`
+
+  return (
+    <svg viewBox={`0 0 ${width} ${height}`} preserveAspectRatio="none" aria-hidden className={css.stockChart}>
+      <defs>
+        <linearGradient id={`${chartId}-bg`} x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stopColor="#071427" />
+          <stop offset="100%" stopColor="#0d2038" />
+        </linearGradient>
+        <linearGradient id={`${chartId}-glow`} x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stopColor={up ? '#36f0a8' : '#ff8d7a'} stopOpacity="0.38" />
+          <stop offset="100%" stopColor={up ? '#36f0a8' : '#ff8d7a'} stopOpacity="0.02" />
+        </linearGradient>
+      </defs>
+      <rect x="0" y="0" width={width} height={height} rx="16" fill={`url(#${chartId}-bg)`} />
+      <path d={areaPath} fill={`url(#${chartId}-glow)`} opacity="0.9" className={css.stockArea} />
+      {[0, 1, 2, 3].map(index => {
+        const y = plotTop + plotHeight * (index / 3)
+        return <line key={index} x1={left} y1={y} x2={width - right} y2={y} stroke="rgba(160,190,255,0.12)" strokeDasharray="3 4" className={css.stockGrid} />
+      })}
+      {candles.map((candle, index) => {
+        const x = mapX(index)
+        const bodyTop = mapY(Math.max(candle.open, candle.close))
+        const bodyBottom = mapY(Math.min(candle.open, candle.close))
+        const color = candle.close >= candle.open ? '#45f0aa' : '#ff7f74'
+        const barHeight = Math.max(2, bodyBottom - bodyTop)
+        const volumeBarHeight = (candle.volume / maxVolume) * (volumeHeight - 6)
+        return (
+          <g key={`${candle.time}-${index}`}>
+            <line x1={x} y1={mapY(candle.high)} x2={x} y2={mapY(candle.low)} stroke={color} strokeWidth="1.2" strokeLinecap="round" />
+            <rect x={x - candleWidth / 2} y={bodyTop} width={candleWidth} height={barHeight} rx="1.4" fill={color} opacity="0.96" />
+            <rect x={x - candleWidth / 2} y={volumeTop + (volumeHeight - 4 - volumeBarHeight)} width={candleWidth} height={Math.max(2, volumeBarHeight)} rx="1.2" fill={color} opacity="0.28" />
+          </g>
+        )
+      })}
+      <path d={buildPath(ma5, mapX, mapY)} fill="none" stroke="#7fe3ff" strokeWidth="1.8" strokeLinejoin="round" strokeLinecap="round" opacity="0.95" className={css.stockLineFast} />
+      <path d={buildPath(ma20, mapX, mapY)} fill="none" stroke="#ffd56c" strokeWidth="1.5" strokeLinejoin="round" strokeLinecap="round" opacity="0.9" className={css.stockLineSlow} />
+      <circle cx={lastX} cy={lastY} r="3.4" fill={up ? '#7ff2bf' : '#ff9f95'} className={css.stockPulse} />
+      <circle cx={lastX} cy={lastY} r="7.2" fill="none" stroke={up ? '#7ff2bf' : '#ff9f95'} strokeWidth="1.4" className={css.stockPulseRing} />
+      <text x={14} y={18} fill="rgba(232,241,255,0.94)" fontSize="10" fontWeight="700">{snapshot.label}</text>
+      <text x={width - 14} y={18} fill={up ? '#6ff7b9' : '#ff9d92'} fontSize="10" fontWeight="700" textAnchor="end">
+        {`${up ? '+' : ''}${snapshot.changePct.toFixed(2)}%`}
+      </text>
+      <text x={14} y={30} fill="rgba(185,202,230,0.78)" fontSize="9">{`${formatPrice(snapshot.latest)} · ${snapshot.sourceLabel}`}</text>
+      <text x={width - 14} y={30} fill="rgba(185,202,230,0.72)" fontSize="9" textAnchor="end">{snapshot.updatedAt.slice(5)}</text>
+    </svg>
+  )
+}
+
 function randomIndex(length: number, except?: number): number {
   if (length <= 1) return 0
   const options = Array.from({ length }, (_, index) => index).filter(index => index !== except)
@@ -153,16 +538,22 @@ function createStarterPet(name: string): PetState {
     personaSwitchCount: 0,
     observedTokens: {},
     backgrounds: [],
+    themeKind: 'gallery',
+    stockTheme: createDefaultStockTheme(),
   }
 }
 
 /** Start near the lower-right workspace area, not inside the left sidebar. */
 function initialPosition(): { x: number; y: number } {
   if (typeof window === 'undefined') return { x: 120, y: 320 }
-  return {
-    x: Math.max(24, window.innerWidth - 180),
-    y: Math.max(96, window.innerHeight - 240),
-  }
+  const viewport = viewportRect()
+  return clampPosition(
+    {
+      x: viewport.left + viewport.width - 180,
+      y: viewport.top + viewport.height - 240,
+    },
+    ADOPTED_ROAMER_SIZE,
+  )
 }
 
 /** Idle span before the pet proactively speaks up (nudges the user). */
@@ -311,6 +702,7 @@ function loadPet(fallbackName: string): PetState {
     const parsed = JSON.parse(raw) as PetState
     if (typeof parsed.name !== 'string') return createStarterPet(fallbackName)
     const backgrounds = sanitizeBackgrounds(parsed.backgrounds)
+    const stockTheme = sanitizeStockTheme(parsed.stockTheme)
     const legacyBackground = typeof parsed.background === 'string' && parsed.background !== '' ? [parsed.background] : []
       return {
         ...parsed,
@@ -323,6 +715,8 @@ function loadPet(fallbackName: string): PetState {
           : 0,
         observedTokens: sanitizeObservedTokens(parsed.observedTokens),
         backgrounds: backgrounds.length > 0 ? backgrounds : legacyBackground,
+        themeKind: sanitizeThemeKind(parsed.themeKind),
+        stockTheme,
       }
   } catch {
     return createStarterPet(fallbackName)
@@ -342,6 +736,37 @@ function savePet(pet: PetState | null): void {
 /** Clamp a value into [min, max]. */
 function clamp(value: number, min: number, max: number): number {
   return value < min ? min : value > max ? max : value
+}
+
+function viewportRect(): { left: number; top: number; width: number; height: number } {
+  if (typeof window === 'undefined') return { left: 0, top: 0, width: 1280, height: 720 }
+  const viewport = window.visualViewport
+  if (viewport !== undefined) {
+    return {
+      left: Math.round(viewport.offsetLeft),
+      top: Math.round(viewport.offsetTop),
+      width: Math.round(viewport.width),
+      height: Math.round(viewport.height),
+    }
+  }
+  return { left: 0, top: 0, width: window.innerWidth, height: window.innerHeight }
+}
+
+function clampPosition(
+  pos: { x: number; y: number },
+  size: { width: number; height: number },
+): { x: number; y: number } {
+  const viewport = viewportRect()
+  const width = Math.max(0, Math.round(size.width))
+  const height = Math.max(0, Math.round(size.height))
+  const minX = viewport.left + PET_VIEWPORT_MARGIN
+  const minY = viewport.top + PET_VIEWPORT_MARGIN
+  const maxX = viewport.left + viewport.width - width - PET_VIEWPORT_MARGIN
+  const maxY = viewport.top + viewport.height - height - PET_VIEWPORT_MARGIN
+  return {
+    x: Math.round(maxX < minX ? minX : clamp(pos.x, minX, maxX)),
+    y: Math.round(maxY < minY ? minY : clamp(pos.y, minY, maxY)),
+  }
 }
 
 /** Overlay entry props: frame-wide overlay carries only the standard kit + locale. */
@@ -369,6 +794,7 @@ export function PetPanel({ t, useSessions }: PetPanelProps) {
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const hatchTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const roamTimer = useRef<ReturnType<typeof setInterval> | null>(null)
+  const roamerRef = useRef<HTMLDivElement | null>(null)
   const fileInput = useRef<HTMLInputElement | null>(null)
   const bgInput = useRef<HTMLInputElement | null>(null)
   const cardRef = useRef<HTMLDivElement | null>(null)
@@ -377,17 +803,87 @@ export function PetPanel({ t, useSessions }: PetPanelProps) {
   const drag = useRef<{ px: number; py: number; ox: number; oy: number; moved: boolean } | null>(null)
   const [photoNatural, setPhotoNatural] = useState<{ width: number; height: number } | null>(null)
   const [cardSize, setCardSize] = useState<{ width: number; height: number }>({ width: 0, height: 0 })
+  const [roamerSize, setRoamerSize] = useState<{ width: number; height: number } | null>(null)
   const [backgroundIndex, setBackgroundIndex] = useState(0)
 
   const backgrounds = pet?.backgrounds ?? []
+  const themeKind = pet?.themeKind ?? 'gallery'
+  const stockTheme = pet?.stockTheme ?? createDefaultStockTheme()
+  const stockSymbols = useMemo(() => parseStockSymbols(stockTheme.symbol), [stockTheme.symbol])
+  const [stockSymbolIndex, setStockSymbolIndex] = useState(0)
+  const activeStockSymbol = stockSymbols[stockSymbolIndex] ?? stockSymbols[0] ?? DEFAULT_STOCK_SYMBOL
+  const stockEnabled = themeKind === 'stock'
   const activeBackground = backgrounds[backgroundIndex] ?? backgrounds[0]
   const [displayBackground, setDisplayBackground] = useState<string | undefined>(activeBackground)
   const [fadingBackground, setFadingBackground] = useState<string | undefined>(undefined)
   const [backgroundVisible, setBackgroundVisible] = useState(true)
+  const [stockSnapshot, setStockSnapshot] = useState<StockSnapshot | null>(null)
+  const [stockLoading, setStockLoading] = useState(false)
+  const [stockError, setStockError] = useState<string | null>(null)
+  const fallbackRoamerBounds = pet === null
+    ? UNADOPTED_ROAMER_SIZE
+    : menuOpen
+      ? MENU_ROAMER_SIZE
+      : sessionsOpen
+        ? SESSIONS_ROAMER_SIZE
+        : ADOPTED_ROAMER_SIZE
+  const roamerBounds = roamerSize ?? fallbackRoamerBounds
+
+  useEffect(() => {
+    setStockSymbolIndex(current => current >= stockSymbols.length ? 0 : current)
+  }, [stockSymbols])
+
+  useEffect(() => {
+    const node = roamerRef.current
+    if (node === null) {
+      setRoamerSize(null)
+      return
+    }
+    const updateSize = () => {
+      const rect = node.getBoundingClientRect()
+      const next = {
+        width: Math.round(rect.width),
+        height: Math.round(rect.height),
+      }
+      setRoamerSize(prev => prev !== null && prev.width === next.width && prev.height === next.height ? prev : next)
+    }
+    updateSize()
+    const observer = new ResizeObserver(updateSize)
+    observer.observe(node)
+    return () => observer.disconnect()
+  }, [pet])
+
+  useEffect(() => {
+    if (!stockEnabled || stockSymbols.length <= 1) return
+    const id = window.setInterval(() => {
+      setStockSymbolIndex(current => (current + 1) % stockSymbols.length)
+    }, STOCK_ROTATE_MS)
+    return () => window.clearInterval(id)
+  }, [stockEnabled, stockSymbols])
 
   useEffect(() => { savePet(pet) }, [pet])
 
   useEffect(() => {
+    const keepInBounds = () => {
+      setPos(prev => {
+        const next = clampPosition(prev, roamerBounds)
+        return next.x === prev.x && next.y === prev.y ? prev : next
+      })
+    }
+    keepInBounds()
+    const viewport = window.visualViewport
+    window.addEventListener('resize', keepInBounds)
+    viewport?.addEventListener('resize', keepInBounds)
+    viewport?.addEventListener('scroll', keepInBounds)
+    return () => {
+      window.removeEventListener('resize', keepInBounds)
+      viewport?.removeEventListener('resize', keepInBounds)
+      viewport?.removeEventListener('scroll', keepInBounds)
+    }
+  }, [roamerBounds])
+
+  useEffect(() => {
+    if (themeKind !== 'gallery') return
     if (backgrounds.length <= 1) {
       setBackgroundIndex(0)
       return
@@ -396,9 +892,10 @@ export function PetPanel({ t, useSessions }: PetPanelProps) {
       setBackgroundIndex(current => randomIndex(backgrounds.length, current))
     }, BACKGROUND_ROTATE_MS)
     return () => window.clearInterval(id)
-  }, [backgrounds])
+  }, [backgrounds, themeKind])
 
   useEffect(() => {
+    if (themeKind !== 'gallery') return
     if (activeBackground === displayBackground) return
     setFadingBackground(displayBackground)
     setDisplayBackground(activeBackground)
@@ -415,9 +912,13 @@ export function PetPanel({ t, useSessions }: PetPanelProps) {
       window.cancelAnimationFrame(raf)
       window.clearTimeout(clearId)
     }
-  }, [activeBackground, displayBackground])
+  }, [activeBackground, displayBackground, themeKind])
 
   useEffect(() => {
+    if (themeKind !== 'gallery') {
+      setPhotoNatural(null)
+      return
+    }
     if (displayBackground === undefined) {
       setPhotoNatural(null)
       return
@@ -435,11 +936,11 @@ export function PetPanel({ t, useSessions }: PetPanelProps) {
     }
     image.src = displayBackground
     return () => { disposed = true }
-  }, [displayBackground])
+  }, [displayBackground, themeKind])
 
   useEffect(() => {
     const node = cardRef.current
-    if (node === null || displayBackground === undefined) {
+    if (themeKind !== 'gallery' || node === null || displayBackground === undefined) {
       setCardSize({ width: 0, height: 0 })
       return
     }
@@ -454,14 +955,14 @@ export function PetPanel({ t, useSessions }: PetPanelProps) {
     const observer = new ResizeObserver(updateSize)
     observer.observe(node)
     return () => observer.disconnect()
-  }, [displayBackground])
+  }, [displayBackground, themeKind])
 
   useEffect(() => {
     const layer = photoLayerRef.current
     if (layer === null) return
     layer.getAnimations().forEach(animation => animation.cancel())
     layer.style.backgroundPosition = '50% 50%'
-    if (displayBackground === undefined || photoNatural === null || cardSize.width <= 0 || cardSize.height <= 0) return
+    if (themeKind !== 'gallery' || displayBackground === undefined || photoNatural === null || cardSize.width <= 0 || cardSize.height <= 0) return
     const coverScale = Math.max(cardSize.width / photoNatural.width, cardSize.height / photoNatural.height)
     const coverWidth = photoNatural.width * coverScale
     const coverHeight = photoNatural.height * coverScale
@@ -493,7 +994,46 @@ export function PetPanel({ t, useSessions }: PetPanelProps) {
       easing: 'cubic-bezier(0.38, 0.02, 0.2, 1)',
     })
     return () => animation.cancel()
-  }, [displayBackground, photoNatural, cardSize])
+  }, [displayBackground, photoNatural, cardSize, themeKind])
+
+  const activeStockTheme = useMemo<StockThemeConfig>(() => ({
+    ...stockTheme,
+    symbol: activeStockSymbol,
+  }), [stockTheme, activeStockSymbol])
+
+  useEffect(() => {
+    if (!stockEnabled) {
+      setStockLoading(false)
+      setStockError(null)
+      return
+    }
+    let cancelled = false
+    let refreshId: ReturnType<typeof setInterval> | null = null
+    const refresh = async () => {
+      if (cancelled) return
+      setStockLoading(true)
+      try {
+        const snapshot = await loadStockSnapshot(activeStockTheme)
+        if (cancelled) return
+        setStockSnapshot(snapshot)
+        setStockError(null)
+      } catch (error) {
+        if (cancelled) return
+        const fallback = buildStockSnapshot(generateDemoCandles(activeStockTheme.symbol), activeStockTheme.symbol, 'demo', 'Demo fallback', true)
+        const message = error instanceof Error ? error.message : 'K-line API unavailable'
+        setStockSnapshot(fallback)
+        setStockError(message)
+      } finally {
+        if (!cancelled) setStockLoading(false)
+      }
+    }
+    void refresh()
+    refreshId = window.setInterval(() => { void refresh() }, activeStockTheme.refreshMs)
+    return () => {
+      cancelled = true
+      if (refreshId !== null) window.clearInterval(refreshId)
+    }
+  }, [stockEnabled, activeStockTheme])
 
   const persona = PERSONAS[pet?.persona ?? DEFAULT_PERSONA] ?? PERSONAS[DEFAULT_PERSONA]
 
@@ -718,15 +1258,16 @@ export function PetPanel({ t, useSessions }: PetPanelProps) {
     if (pet === null) return
     if (hovered || menuOpen || sessionsOpen || busy || dragging) return
     const step = () => {
-      const maxX = Math.max(40, window.innerWidth - 140)
-      const maxY = Math.max(120, window.innerHeight - 200)
       setPos(prev => {
         const dx = (Math.random() - 0.5) * 240
-        const nx = clamp(Math.round(prev.x + dx), 20, maxX)
-        const ny = clamp(Math.round(prev.y + (Math.random() - 0.5) * 120), 100, maxY)
-        setFacing(nx >= prev.x ? 1 : -1)
+        const next = clampPosition({
+          x: Math.round(prev.x + dx),
+          y: Math.round(prev.y + (Math.random() - 0.5) * 120),
+        }, roamerBounds)
+        if (next.x === prev.x && next.y === prev.y) return prev
+        setFacing(next.x >= prev.x ? 1 : -1)
         setWalking(true)
-        return { x: nx, y: ny }
+        return next
       })
     }
     const kickoff = setTimeout(step, 1500)
@@ -736,7 +1277,7 @@ export function PetPanel({ t, useSessions }: PetPanelProps) {
       if (roamTimer.current !== null) clearInterval(roamTimer.current)
       roamTimer.current = null
     }
-  }, [pet, hovered, menuOpen, sessionsOpen, busy, dragging])
+  }, [pet, hovered, menuOpen, sessionsOpen, busy, dragging, roamerBounds])
 
   // Stop the walk cycle shortly after each move settles.
   useEffect(() => {
@@ -744,6 +1285,19 @@ export function PetPanel({ t, useSessions }: PetPanelProps) {
     const id = setTimeout(() => setWalking(false), 2600)
     return () => clearTimeout(id)
   }, [walking, pos])
+
+  useEffect(() => {
+    if (!menuOpen && !sessionsOpen) return
+    const onDocumentPointerDown = (event: PointerEvent) => {
+      const root = roamerRef.current
+      const target = event.target
+      if (root !== null && target instanceof Node && root.contains(target)) return
+      setMenuOpen(false)
+      setSessionsOpen(false)
+    }
+    document.addEventListener('pointerdown', onDocumentPointerDown, true)
+    return () => document.removeEventListener('pointerdown', onDocumentPointerDown, true)
+  }, [menuOpen, sessionsOpen])
 
   useEffect(() => () => {
     if (timer.current !== null) clearTimeout(timer.current)
@@ -764,24 +1318,44 @@ export function PetPanel({ t, useSessions }: PetPanelProps) {
     const dx = event.clientX - d.px
     const dy = event.clientY - d.py
     if (!d.moved && Math.hypot(dx, dy) < DRAG_THRESHOLD) return
-    d.moved = true
+    if (!d.moved) {
+      d.moved = true
+      setMenuOpen(false)
+      setSessionsOpen(false)
+      setWalking(false)
+    }
     setDragging(true)
-    const maxX = Math.max(20, window.innerWidth - 120)
-    const maxY = Math.max(80, window.innerHeight - 160)
-    const nx = clamp(Math.round(d.ox + dx), 8, maxX)
-    const ny = clamp(Math.round(d.oy + dy), 60, maxY)
     setFacing(dx >= 0 ? 1 : -1)
-    setPos({ x: nx, y: ny })
+    setPos(prev => {
+      const next = clampPosition({ x: Math.round(d.ox + dx), y: Math.round(d.oy + dy) }, roamerBounds)
+      return next.x === prev.x && next.y === prev.y ? prev : next
+    })
+  }, [roamerBounds])
+
+  const finishDrag = useCallback((toggleMenu: boolean) => {
+    const d = drag.current
+    drag.current = null
+    if (toggleMenu && d !== null && !d.moved) setMenuOpen(open => !open)
+    setDragging(false)
   }, [])
 
   const onPointerUp = useCallback((event: React.PointerEvent<HTMLButtonElement>) => {
-    const d = drag.current
-    drag.current = null
     try { event.currentTarget.releasePointerCapture(event.pointerId) } catch { /* ignore */ }
-    // A press that never crossed the drag threshold is a click → toggle menu.
-    if (d !== null && !d.moved) setMenuOpen(open => !open)
-    // Settle drag state on the next tick so the click above wins first.
-    setDragging(false)
+    finishDrag(true)
+  }, [finishDrag])
+
+  const onPointerCancel = useCallback(() => {
+    finishDrag(false)
+  }, [finishDrag])
+
+  const onLostPointerCapture = useCallback(() => {
+    finishDrag(false)
+  }, [finishDrag])
+
+  const openMenuFromCard = useCallback((event: React.MouseEvent<HTMLDivElement>) => {
+    if (isInteractiveElement(event.target)) return
+    setSessionsOpen(false)
+    setMenuOpen(true)
   }, [])
 
   // ---- Adoption + care actions. ----
@@ -982,6 +1556,81 @@ export function PetPanel({ t, useSessions }: PetPanelProps) {
     setBackgroundIndex(0)
   }, [])
 
+  const useGalleryTheme = useCallback(() => {
+    setMenuOpen(false)
+    setPet(current => (current === null ? current : { ...current, themeKind: 'gallery' }))
+  }, [])
+
+  const useStockTheme = useCallback(() => {
+    setMenuOpen(false)
+    setPet(current => (current === null ? current : {
+      ...current,
+      themeKind: 'stock',
+      stockTheme: current.stockTheme ?? createDefaultStockTheme(),
+    }))
+  }, [])
+
+  const configureStockSymbol = useCallback(() => {
+    const currentSymbol = pet?.stockTheme?.symbol ?? DEFAULT_STOCK_SYMBOL
+    const next = window.prompt(t('panel.stockSymbolPrompt'), currentSymbol)
+    if (next !== null && next.trim() !== '') {
+      const symbols = parseStockSymbols(next)
+      const symbol = symbols.join(', ')
+      if (symbol === '') {
+        setMenuOpen(false)
+        return
+      }
+      setPet(current => (current === null ? current : {
+        ...current,
+        themeKind: 'stock',
+        stockTheme: {
+          ...(current.stockTheme ?? createDefaultStockTheme(symbol)),
+          symbol,
+        },
+      }))
+    }
+    setMenuOpen(false)
+  }, [pet?.stockTheme?.symbol, t])
+
+  const configureTwelveDataKey = useCallback(() => {
+    const currentKey = pet?.stockTheme?.apiKey ?? ''
+    const next = window.prompt(t('panel.stockApiKeyPrompt'), currentKey)
+    if (next !== null) {
+      const apiKey = next.trim()
+      setPet(current => {
+        if (current === null) return current
+        const base = current.stockTheme ?? createDefaultStockTheme()
+        return {
+          ...current,
+          themeKind: 'stock',
+          stockTheme: {
+            ...base,
+            provider: apiKey === '' ? 'demo' : 'twelvedata',
+            apiKey: apiKey === '' ? undefined : apiKey,
+          },
+        }
+      })
+    }
+    setMenuOpen(false)
+  }, [pet?.stockTheme?.apiKey, t])
+
+  const clearTwelveDataKey = useCallback(() => {
+    setMenuOpen(false)
+    setPet(current => (current === null ? current : {
+      ...current,
+      stockTheme: {
+        ...(current.stockTheme ?? createDefaultStockTheme()),
+        provider: 'demo',
+        apiKey: undefined,
+      },
+    }))
+  }, [])
+
+  const openTwelveDataKeys = useCallback(() => {
+    window.open(TWELVE_DATA_API_KEYS_URL, '_blank', 'noopener,noreferrer')
+    setMenuOpen(false)
+  }, [])
+
   const pickSession = useCallback((id: SessionRow['id']) => {
     openSession(id)
     setSessionsOpen(false)
@@ -1020,10 +1669,23 @@ export function PetPanel({ t, useSessions }: PetPanelProps) {
   const canSwitchPersona = firstSwitchFree || tokenCredit >= TOKENS_PER_PERSONA
   const switchRemaining = firstSwitchFree ? 0 : Math.max(0, TOKENS_PER_PERSONA - tokenCredit)
   const switchProgress = Math.min(tokenCredit, TOKENS_PER_PERSONA)
-  const photoCardStyle = displayBackground !== undefined
+  const galleryActive = themeKind === 'gallery' && displayBackground !== undefined
+  const stockChart = useMemo(() => (stockSnapshot === null ? null : renderStockChart(stockSnapshot)), [stockSnapshot])
+  const stockChartKey = stockSnapshot === null ? `stock-empty:${activeStockSymbol}` : `${stockSnapshot.symbol}:${stockSnapshot.updatedAt}:${stockSnapshot.latest}`
+  const stockSymbolSummary = summarizeStockSymbols(stockSymbols, stockSymbolIndex)
+  const stockBadgeTone = (stockSnapshot?.change ?? 0) >= 0 ? css.stockBadgeUp : css.stockBadgeDown
+  const stockErrorDetail = stockErrorText(stockError)
+  const stockStatusText = stockLoading
+    ? t('stock.loading')
+    : stockErrorDetail !== null
+      ? t('stock.fallbackDetail', { reason: stockErrorDetail })
+      : stockSnapshot?.isDemo === true
+        ? t('stock.demo')
+        : t('stock.liveTwelveData')
+  const photoCardStyle = galleryActive
     ? ({ '--pet-card-photo': `url(${displayBackground})` } as CSSProperties)
     : undefined
-  const fadingPhotoCardStyle = fadingBackground !== undefined
+  const fadingPhotoCardStyle = galleryActive && fadingBackground !== undefined
     ? ({ '--pet-card-photo': `url(${fadingBackground})` } as CSSProperties)
     : undefined
 
@@ -1038,7 +1700,7 @@ export function PetPanel({ t, useSessions }: PetPanelProps) {
   // Not adopted yet: a single adoption egg that hatches into a random pet.
   if (pet === null) {
     return (
-      <div className={css.roamer} style={{ left: pos.x, top: pos.y }}>
+      <div ref={roamerRef} className={css.roamer} style={{ left: pos.x, top: pos.y }}>
         <div className={css.adopt}>
           <div className={css.adoptTitle}>{t('panel.adoptEggTitle')}</div>
           <div className={css.adoptText}>{t('panel.adoptEggText')}</div>
@@ -1073,6 +1735,7 @@ export function PetPanel({ t, useSessions }: PetPanelProps) {
 
   return (
     <div
+      ref={roamerRef}
       className={`${css.roamer} ${dragging ? (css.dragActive ?? '') : ''}`}
       style={themeStyle}
       onMouseEnter={() => setHovered(true)}
@@ -1082,10 +1745,14 @@ export function PetPanel({ t, useSessions }: PetPanelProps) {
           The uploaded background image (if any) is used as the card background. */}
       <div
         ref={cardRef}
-        className={displayBackground !== undefined ? `${css.card} ${css.cardPhoto ?? ''}` : css.card}
+        className={stockEnabled ? `${css.card} ${css.cardStock ?? ''}` : galleryActive ? `${css.card} ${css.cardPhoto ?? ''}` : css.card}
+        onClick={openMenuFromCard}
       >
-        {fadingBackground !== undefined && <div className={`${css.cardPhotoLayer} ${css.cardPhotoLayerPrev ?? ''}`} style={fadingPhotoCardStyle} aria-hidden />}
-        {displayBackground !== undefined && (
+        {stockEnabled && stockChart !== null && (
+          <div key={stockChartKey} className={`${css.cardStockLayer} ${css.cardStockLayerAnimated ?? ''}`} aria-hidden>{stockChart}</div>
+        )}
+        {fadingBackground !== undefined && galleryActive && <div className={`${css.cardPhotoLayer} ${css.cardPhotoLayerPrev ?? ''}`} style={fadingPhotoCardStyle} aria-hidden />}
+        {galleryActive && (
           <div
             ref={photoLayerRef}
             className={`${css.cardPhotoLayer} ${css.cardPhotoLayerCurrent ?? ''} ${backgroundVisible ? (css.cardPhotoLayerVisible ?? '') : ''}`}
@@ -1094,7 +1761,17 @@ export function PetPanel({ t, useSessions }: PetPanelProps) {
           />
         )}
         <div className={css.cardContentRow}>
-          <div className={displayBackground !== undefined ? `${css.cardBody} ${css.cardBodyGlass ?? ''}` : css.cardBody}>
+          <div className={stockEnabled || galleryActive ? `${css.cardBody} ${css.cardBodyGlass ?? ''}` : css.cardBody}>
+            {stockEnabled && stockSnapshot !== null && (
+              <div className={css.stockInlineMeta}>
+                <span className={`${css.stockBadge} ${stockBadgeTone}`}>{`${stockSnapshot.symbol} ${formatPrice(stockSnapshot.latest)}`}</span>
+                {stockSymbols.length > 1 && (
+                  <span className={css.stockBadgeMuted}>{`${stockSymbolIndex + 1}/${stockSymbols.length}`}</span>
+                )}
+                <span className={css.stockBadgeMuted}>{t('stock.range', { low: formatPrice(stockSnapshot.low), high: formatPrice(stockSnapshot.high) })}</span>
+                <span className={css.stockBadgeMuted}>{t('stock.volume', { count: shortVolume(stockSnapshot.volume) })}</span>
+              </div>
+            )}
             <div className={css.cardTitle}>{pet.name}</div>
             {cardInfo !== null && <div className={css.cardText}>{cardInfo}</div>}
             <div className={css.cardQuip}>{cardQuip}</div>
@@ -1102,6 +1779,9 @@ export function PetPanel({ t, useSessions }: PetPanelProps) {
           <div className={css.cardStatus} aria-hidden>{statusGlyph}</div>
         </div>
         <div className={css.cardMeta}>
+          {stockEnabled && (
+            <span className={css.stockSource}>{stockStatusText}</span>
+          )}
           {tokens > 0 && (
             <span className={css.food}>{t('status.food', { count: shortTokens(tokens) })}</span>
           )}
@@ -1153,6 +1833,8 @@ export function PetPanel({ t, useSessions }: PetPanelProps) {
         onPointerDown={onPointerDown}
         onPointerMove={onPointerMove}
         onPointerUp={onPointerUp}
+        onPointerCancel={onPointerCancel}
+        onLostPointerCapture={onLostPointerCapture}
       >
         {['mario', 'wukong', 'nezha', 'niudemon', 'redboy', 'tang', 'pikachu', 'baymax', 'minion', 'spongebob', 'simba', 'po', 'tom', 'jerry', 'mickey', 'donald', 'doraemon', 'goku', 'shinchan', 'conan'].includes(persona.shape) ? (
           <span className={css[`${persona.shape}Body`] as string} aria-hidden>
@@ -1205,32 +1887,69 @@ export function PetPanel({ t, useSessions }: PetPanelProps) {
       {menuOpen && (
         <div className={css.menu}>
           <div className={css.menuName}>{pet.name} · {t('status.level', { level: pet.affinity })}</div>
-          <button type="button" className={css.menuItem} onClick={uploadAvatar}>{t('panel.avatar')}</button>
-          {pet.avatar !== undefined && (
-            <button type="button" className={css.menuItem} onClick={clearAvatar}>{t('panel.clearAvatar')}</button>
-          )}
-          <button
-            type="button"
-            className={css.menuItem}
-            onClick={uploadBackground}
-            disabled={backgrounds.length >= BACKGROUND_MAX_ITEMS}
-          >
-            {t('panel.background', { count: backgrounds.length, max: BACKGROUND_MAX_ITEMS })}
-          </button>
-          {backgrounds.length > 0 && (
-            <button type="button" className={css.menuItem} onClick={clearBackground}>{t('panel.clearBackground')}</button>
-          )}
-          <div className={css.menuHint}>
-            {firstSwitchFree
-              ? t('panel.personaFirstFree')
-              : t('panel.personaProgress', { count: shortTokens(switchProgress) })}
+          <div className={css.menuGrid}>
+            <section className={css.menuSection}>
+              <div className={css.menuSectionTitle}>{t('panel.sectionTheme')}</div>
+              <div className={css.menuSectionBody}>
+                <button type="button" className={`${css.menuItem} ${themeKind === 'gallery' ? (css.menuItemActive ?? '') : ''}`} onClick={useGalleryTheme}>{t('panel.themeGallery')}</button>
+                <button type="button" className={`${css.menuItem} ${themeKind === 'stock' ? (css.menuItemActive ?? '') : ''}`} onClick={useStockTheme}>{t('panel.themeStock')}</button>
+                <div className={css.menuHint}>{themeKind === 'stock' ? stockStatusText : t('panel.background', { count: backgrounds.length, max: BACKGROUND_MAX_ITEMS })}</div>
+              </div>
+            </section>
+
+            <section className={css.menuSection}>
+              <div className={css.menuSectionTitle}>{t('panel.sectionStock')}</div>
+              <div className={css.menuSectionBody}>
+                <button type="button" className={css.menuItem} onClick={configureStockSymbol}>{t('panel.stockSymbol', { symbol: stockSymbolSummary })}</button>
+                <button type="button" className={css.menuItem} onClick={openTwelveDataKeys}>{t('panel.stockApiKeyGet')}</button>
+                <button type="button" className={css.menuItem} onClick={configureTwelveDataKey}>{t('panel.stockApiKey')}</button>
+                {stockTheme.apiKey !== undefined && (
+                  <button type="button" className={css.menuItem} onClick={clearTwelveDataKey}>{t('panel.stockApiKeyClear')}</button>
+                )}
+                {stockSymbols.length > 1 && (
+                  <div className={css.menuHint}>{t('stock.watchlist', { current: stockSymbolIndex + 1, total: stockSymbols.length })}</div>
+                )}
+              </div>
+            </section>
+
+            <section className={css.menuSection}>
+              <div className={css.menuSectionTitle}>{t('panel.sectionPet')}</div>
+              <div className={css.menuSectionBody}>
+                <button type="button" className={css.menuItem} onClick={uploadAvatar}>{t('panel.avatar')}</button>
+                {pet.avatar !== undefined && (
+                  <button type="button" className={css.menuItem} onClick={clearAvatar}>{t('panel.clearAvatar')}</button>
+                )}
+                <button
+                  type="button"
+                  className={css.menuItem}
+                  onClick={uploadBackground}
+                  disabled={backgrounds.length >= BACKGROUND_MAX_ITEMS}
+                >
+                  {t('panel.background', { count: backgrounds.length, max: BACKGROUND_MAX_ITEMS })}
+                </button>
+                {backgrounds.length > 0 && (
+                  <button type="button" className={css.menuItem} onClick={clearBackground}>{t('panel.clearBackground')}</button>
+                )}
+                <button type="button" className={css.menuItem} onClick={rename}>{t('panel.rename')}</button>
+              </div>
+            </section>
+
+            <section className={css.menuSection}>
+              <div className={css.menuSectionTitle}>{t('panel.sectionGrowth')}</div>
+              <div className={css.menuSectionBody}>
+                <div className={css.menuHint}>
+                  {firstSwitchFree
+                    ? t('panel.personaFirstFree')
+                    : t('panel.personaProgress', { count: shortTokens(switchProgress) })}
+                </div>
+                <button type="button" className={css.menuItem} onClick={switchPersona} disabled={!canSwitchPersona}>
+                  {canSwitchPersona
+                    ? t('panel.persona')
+                    : t('panel.personaLocked', { count: shortTokens(switchRemaining) })}
+                </button>
+              </div>
+            </section>
           </div>
-          <button type="button" className={css.menuItem} onClick={switchPersona} disabled={!canSwitchPersona}>
-            {canSwitchPersona
-              ? t('panel.persona')
-              : t('panel.personaLocked', { count: shortTokens(switchRemaining) })}
-          </button>
-          <button type="button" className={css.menuItem} onClick={rename}>{t('panel.rename')}</button>
         </div>
       )}
     </div>
