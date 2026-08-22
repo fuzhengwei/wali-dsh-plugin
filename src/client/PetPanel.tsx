@@ -1429,13 +1429,8 @@ export function PetPanel({ t, useSessions }: PetPanelProps) {
   }, [finishDrag])
 
   const onPetPointerUp = useCallback((event: React.PointerEvent<HTMLButtonElement>) => {
-    const d = drag.current
     try { event.currentTarget.releasePointerCapture(event.pointerId) } catch { /* ignore */ }
     finishDrag()
-    if (d !== null && !d.moved) {
-      setSessionsOpen(false)
-      setMenuOpen(open => !open)
-    }
   }, [finishDrag])
 
   const onPointerCancel = useCallback(() => {
@@ -1460,6 +1455,15 @@ export function PetPanel({ t, useSessions }: PetPanelProps) {
 
   const openMenuFromCard = useCallback((event: React.MouseEvent<HTMLDivElement>) => {
     if (isInteractiveElement(event.target)) return
+    setSessionsOpen(false)
+    setMenuOpen(open => !open)
+  }, [])
+
+  const openPetMenu = useCallback(() => {
+    if (suppressNextClick.current) {
+      suppressNextClick.current = false
+      return
+    }
     setSessionsOpen(false)
     setMenuOpen(open => !open)
   }, [])
@@ -1915,6 +1919,7 @@ export function PetPanel({ t, useSessions }: PetPanelProps) {
           ['--accent2' as string]: persona.accent2,
         } as React.CSSProperties}
         aria-label={pet.name}
+        onClick={openPetMenu}
         onPointerDown={onPointerDown}
         onPointerMove={onPointerMove}
         onPointerUp={onPetPointerUp}
