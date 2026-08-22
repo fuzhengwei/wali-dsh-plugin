@@ -57,6 +57,12 @@ interface PetState {
   readonly stockTheme?: StockThemeConfig
 }
 
+interface PetPlacement {
+  readonly x: number
+  readonly y: number
+  readonly fixed: boolean
+}
+
 type PetThemeKind = 'gallery' | 'stock'
 type StockDataProvider = 'demo' | 'twelvedata'
 
@@ -95,6 +101,7 @@ interface StockSnapshot {
 }
 
 const STORAGE_KEY = 'dsh-ui-pet:state'
+const PLACEMENT_KEY = 'dsh-ui-pet:placement'
 
 const TOKENS_PER_PERSONA = 1_000_000
 const MAX_TOKEN_SESSIONS = 80
@@ -134,7 +141,7 @@ const SESSIONS_ROAMER_SIZE = { width: 280, height: 360 }
 const UNADOPTED_ROAMER_SIZE = { width: 260, height: 220 }
 
 /** Pixels of pointer travel before a press counts as a drag (not a click). */
-const DRAG_THRESHOLD = 4
+const DRAG_THRESHOLD = 0
 
 /** Starting bond for a freshly adopted pet. */
 const AFFINITY_START = 60
@@ -181,7 +188,10 @@ function shortTokens(n: number): string {
 function sanitizeObservedTokens(value: unknown): Record<string, number> {
   if (typeof value !== 'object' || value === null) return {}
   const entries = Object.entries(value as Record<string, unknown>)
-    .filter(([sessionId, tokens]) => sessionId !== '' && typeof tokens === 'number' && Number.isFinite(tokens) && tokens >= 0)
+    .filter((entry): entry is [string, number] => {
+      const [sessionId, tokens] = entry
+      return sessionId !== '' && typeof tokens === 'number' && Number.isFinite(tokens) && tokens >= 0
+    })
     .map(([sessionId, tokens]) => [sessionId, Math.round(tokens)] as const)
   return Object.fromEntries(entries.slice(-MAX_TOKEN_SESSIONS))
 }
@@ -526,23 +536,6 @@ function randomPersonaId(except?: PersonaId): PersonaId {
   return options[Math.floor(Math.random() * options.length)]?.id ?? DEFAULT_PERSONA
 }
 
-/** Starter pet for first-time installs so the plugin is visible immediately. */
-function createStarterPet(name: string): PetState {
-  return {
-    name,
-    level: 1,
-    affinity: AFFINITY_START,
-    mood: 'happy',
-    persona: DEFAULT_PERSONA,
-    tokenCredit: 0,
-    personaSwitchCount: 0,
-    observedTokens: {},
-    backgrounds: [],
-    themeKind: 'gallery',
-    stockTheme: createDefaultStockTheme(),
-  }
-}
-
 /** Start near the lower-right workspace area, not inside the left sidebar. */
 function initialPosition(): { x: number; y: number } {
   if (typeof window === 'undefined') return { x: 120, y: 320 }
@@ -554,6 +547,40 @@ function initialPosition(): { x: number; y: number } {
     },
     ADOPTED_ROAMER_SIZE,
   )
+}
+
+/** Starter placement for a fresh install: egg visible first, not pinned yet. */
+function createStarterPlacement(): PetPlacement {
+  return {
+    ...initialPosition(),
+    fixed: false,
+  }
+}
+
+/** Read the persisted pet placement, tolerating absent/broken storage. */
+function loadPlacement(): PetPlacement {
+  try {
+    const raw = window.localStorage.getItem(PLACEMENT_KEY)
+    if (raw === null) return createStarterPlacement()
+    const parsed = JSON.parse(raw) as Partial<PetPlacement>
+    if (typeof parsed.x !== 'number' || typeof parsed.y !== 'number') return createStarterPlacement()
+    return {
+      x: Math.round(parsed.x),
+      y: Math.round(parsed.y),
+      fixed: parsed.fixed === true,
+    }
+  } catch {
+    return createStarterPlacement()
+  }
+}
+
+/** Persist the pet placement, swallowing quota/serialization errors. */
+function savePlacement(placement: PetPlacement): void {
+  try {
+    window.localStorage.setItem(PLACEMENT_KEY, JSON.stringify(placement))
+  } catch {
+    // best-effort persistence only
+  }
 }
 
 /** Idle span before the pet proactively speaks up (nudges the user). */
@@ -695,31 +722,31 @@ function shapeParts(shape: PetShape): React.ReactNode {
 }
 
 /** Read the persisted pet, tolerating absent/broken storage. */
-function loadPet(fallbackName: string): PetState {
+function loadPet(_fallbackName: string): PetState | null {
   try {
     const raw = window.localStorage.getItem(STORAGE_KEY)
-    if (raw === null) return createStarterPet(fallbackName)
-    const parsed = JSON.parse(raw) as PetState
-    if (typeof parsed.name !== 'string') return createStarterPet(fallbackName)
+    if (raw === null) return null
+    const parsed = JSON.parse(raw) as PetState & { background?: string }
+    if (typeof parsed.name !== 'string') return null
     const backgrounds = sanitizeBackgrounds(parsed.backgrounds)
     const stockTheme = sanitizeStockTheme(parsed.stockTheme)
     const legacyBackground = typeof parsed.background === 'string' && parsed.background !== '' ? [parsed.background] : []
-      return {
-        ...parsed,
-        persona: asPersonaId(parsed.persona),
-        // Back-compat: old saves predate the bond system.
-        affinity: typeof parsed.affinity === 'number' ? clamp(parsed.affinity, 0, 100) : AFFINITY_START,
-        tokenCredit: typeof parsed.tokenCredit === 'number' && Number.isFinite(parsed.tokenCredit) ? Math.max(0, parsed.tokenCredit) : 0,
-        personaSwitchCount: typeof parsed.personaSwitchCount === 'number' && Number.isFinite(parsed.personaSwitchCount)
-          ? Math.max(0, Math.round(parsed.personaSwitchCount))
-          : 0,
-        observedTokens: sanitizeObservedTokens(parsed.observedTokens),
-        backgrounds: backgrounds.length > 0 ? backgrounds : legacyBackground,
-        themeKind: sanitizeThemeKind(parsed.themeKind),
-        stockTheme,
-      }
+    return {
+      ...parsed,
+      persona: asPersonaId(parsed.persona),
+      // Back-compat: old saves predate the bond system.
+      affinity: typeof parsed.affinity === 'number' ? clamp(parsed.affinity, 0, 100) : AFFINITY_START,
+      tokenCredit: typeof parsed.tokenCredit === 'number' && Number.isFinite(parsed.tokenCredit) ? Math.max(0, parsed.tokenCredit) : 0,
+      personaSwitchCount: typeof parsed.personaSwitchCount === 'number' && Number.isFinite(parsed.personaSwitchCount)
+        ? Math.max(0, Math.round(parsed.personaSwitchCount))
+        : 0,
+      observedTokens: sanitizeObservedTokens(parsed.observedTokens),
+      backgrounds: backgrounds.length > 0 ? backgrounds : legacyBackground,
+      themeKind: sanitizeThemeKind(parsed.themeKind),
+      stockTheme,
+    }
   } catch {
-    return createStarterPet(fallbackName)
+    return null
   }
 }
 
@@ -741,7 +768,7 @@ function clamp(value: number, min: number, max: number): number {
 function viewportRect(): { left: number; top: number; width: number; height: number } {
   if (typeof window === 'undefined') return { left: 0, top: 0, width: 1280, height: 720 }
   const viewport = window.visualViewport
-  if (viewport !== undefined) {
+  if (viewport !== null && viewport !== undefined) {
     return {
       left: Math.round(viewport.offsetLeft),
       top: Math.round(viewport.offsetTop),
@@ -775,6 +802,7 @@ export type PetPanelProps = PropsRuntime<'shell.overlay'> & PropsLocale<'pet'>
 /** Render the draggable robot pet with persona quips, an info card, and a session switcher. */
 export function PetPanel({ t, useSessions }: PetPanelProps) {
   const [pet, setPet] = useState<PetState | null>(() => loadPet(t(PERSONAS[DEFAULT_PERSONA].nameKey)))
+  const [placement] = useState<PetPlacement>(() => loadPlacement())
   const [excited, setExcited] = useState(false)
   const [cheer, setCheer] = useState<string | null>(null)
   const [menuOpen, setMenuOpen] = useState(false)
@@ -783,7 +811,8 @@ export function PetPanel({ t, useSessions }: PetPanelProps) {
   const [hatching, setHatching] = useState(false)
   const [promptStage, setPromptStage] = useState<PromptStage>('ready')
   // Position in px from the left/top of the viewport, plus facing direction.
-  const [pos, setPos] = useState<{ x: number; y: number }>(() => initialPosition())
+  const [pos, setPos] = useState<{ x: number; y: number }>(() => ({ x: placement.x, y: placement.y }))
+  const [fixed, setFixed] = useState(() => placement.fixed)
   const [facing, setFacing] = useState<1 | -1>(1)
   const [walking, setWalking] = useState(false)
   const [dragging, setDragging] = useState(false)
@@ -802,6 +831,7 @@ export function PetPanel({ t, useSessions }: PetPanelProps) {
   const displayBackgroundRef = useRef<string | undefined>(undefined)
   // Drag bookkeeping: pointer origin, pet origin, and whether it became a drag.
   const drag = useRef<{ px: number; py: number; ox: number; oy: number; moved: boolean } | null>(null)
+  const suppressNextClick = useRef(false)
   const [photoNatural, setPhotoNatural] = useState<{ width: number; height: number } | null>(null)
   const [cardSize, setCardSize] = useState<{ width: number; height: number }>({ width: 0, height: 0 })
   const [roamerSize, setRoamerSize] = useState<{ width: number; height: number } | null>(null)
@@ -863,6 +893,14 @@ export function PetPanel({ t, useSessions }: PetPanelProps) {
   }, [stockEnabled, stockSymbols])
 
   useEffect(() => { savePet(pet) }, [pet])
+
+  useEffect(() => {
+    savePlacement({ x: pos.x, y: pos.y, fixed })
+  }, [pos, fixed])
+
+  useEffect(() => {
+    if (fixed) setWalking(false)
+  }, [fixed])
 
   useEffect(() => {
     const keepInBounds = () => {
@@ -1263,7 +1301,7 @@ export function PetPanel({ t, useSessions }: PetPanelProps) {
   // Free roaming, paused while hovered / menu open / dragging / AI busy.
   useEffect(() => {
     if (pet === null) return
-    if (hovered || menuOpen || sessionsOpen || busy || dragging) return
+    if (fixed || hovered || menuOpen || sessionsOpen || busy || dragging) return
     const step = () => {
       setPos(prev => {
         const dx = (Math.random() - 0.5) * 240
@@ -1284,7 +1322,7 @@ export function PetPanel({ t, useSessions }: PetPanelProps) {
       if (roamTimer.current !== null) clearInterval(roamTimer.current)
       roamTimer.current = null
     }
-  }, [pet, hovered, menuOpen, sessionsOpen, busy, dragging, roamerBounds])
+  }, [pet, fixed, hovered, menuOpen, sessionsOpen, busy, dragging, roamerBounds])
 
   // Stop the walk cycle shortly after each move settles.
   useEffect(() => {
@@ -1312,7 +1350,7 @@ export function PetPanel({ t, useSessions }: PetPanelProps) {
     if (slowTurnTimer.current !== null) clearTimeout(slowTurnTimer.current)
   }, [])
 
-  // ---- Drag handlers: pointer down on the robot starts a potential drag. ----
+  // ---- Drag handlers: pointer down on the egg or pet starts a potential drag. ----
   const onPointerDown = useCallback((event: React.PointerEvent<HTMLButtonElement>) => {
     if (event.button !== 0) return
     drag.current = { px: event.clientX, py: event.clientY, ox: pos.x, oy: pos.y, moved: false }
@@ -1339,33 +1377,6 @@ export function PetPanel({ t, useSessions }: PetPanelProps) {
     })
   }, [roamerBounds])
 
-  const finishDrag = useCallback((toggleMenu: boolean) => {
-    const d = drag.current
-    drag.current = null
-    if (toggleMenu && d !== null && !d.moved) setMenuOpen(open => !open)
-    setDragging(false)
-  }, [])
-
-  const onPointerUp = useCallback((event: React.PointerEvent<HTMLButtonElement>) => {
-    try { event.currentTarget.releasePointerCapture(event.pointerId) } catch { /* ignore */ }
-    finishDrag(true)
-  }, [finishDrag])
-
-  const onPointerCancel = useCallback(() => {
-    finishDrag(false)
-  }, [finishDrag])
-
-  const onLostPointerCapture = useCallback(() => {
-    finishDrag(false)
-  }, [finishDrag])
-
-  const openMenuFromCard = useCallback((event: React.MouseEvent<HTMLDivElement>) => {
-    if (isInteractiveElement(event.target)) return
-    setSessionsOpen(false)
-    setMenuOpen(true)
-  }, [])
-
-  // ---- Adoption + care actions. ----
   const hatchEgg = useCallback(() => {
     if (hatching || pet !== null) return
     setHatching(true)
@@ -1388,6 +1399,70 @@ export function PetPanel({ t, useSessions }: PetPanelProps) {
       hatchTimer.current = null
     }, 1250)
   }, [hatching, peek, pet, speakFor, t])
+
+  const collectEgg = useCallback(() => {
+    if (pet === null) return
+    setMenuOpen(false)
+    setSessionsOpen(false)
+    setDragging(false)
+    setWalking(false)
+    setHovered(false)
+    setExcited(false)
+    setCheer(null)
+    setHatching(false)
+    setPet(null)
+  }, [pet])
+
+  const finishDrag = useCallback(() => {
+    const d = drag.current
+    drag.current = null
+    if (d !== null) {
+      suppressNextClick.current = d.moved
+    }
+    if (d !== null && d.moved) setFixed(true)
+    setDragging(false)
+  }, [])
+
+  const onEggPointerUp = useCallback((event: React.PointerEvent<HTMLButtonElement>) => {
+    try { event.currentTarget.releasePointerCapture(event.pointerId) } catch { /* ignore */ }
+    finishDrag()
+  }, [finishDrag])
+
+  const onPetPointerUp = useCallback((event: React.PointerEvent<HTMLButtonElement>) => {
+    const d = drag.current
+    try { event.currentTarget.releasePointerCapture(event.pointerId) } catch { /* ignore */ }
+    finishDrag()
+    if (d !== null && !d.moved) {
+      setSessionsOpen(false)
+      setMenuOpen(open => !open)
+    }
+  }, [finishDrag])
+
+  const onPointerCancel = useCallback(() => {
+    drag.current = null
+    suppressNextClick.current = false
+    setDragging(false)
+  }, [])
+
+  const onLostPointerCapture = useCallback(() => {
+    drag.current = null
+    suppressNextClick.current = false
+    setDragging(false)
+  }, [])
+
+  const activateEgg = useCallback(() => {
+    if (suppressNextClick.current) {
+      suppressNextClick.current = false
+      return
+    }
+    hatchEgg()
+  }, [hatchEgg])
+
+  const openMenuFromCard = useCallback((event: React.MouseEvent<HTMLDivElement>) => {
+    if (isInteractiveElement(event.target)) return
+    setSessionsOpen(false)
+    setMenuOpen(open => !open)
+  }, [])
 
   const rename = useCallback(() => {
     const next = window.prompt(t('panel.namePrompt'))
@@ -1709,12 +1784,15 @@ export function PetPanel({ t, useSessions }: PetPanelProps) {
     return (
       <div ref={roamerRef} className={css.roamer} style={{ left: pos.x, top: pos.y }}>
         <div className={css.adopt}>
-          <div className={css.adoptTitle}>{t('panel.adoptEggTitle')}</div>
-          <div className={css.adoptText}>{t('panel.adoptEggText')}</div>
           <button
             type="button"
             className={`${css.adoptEgg} ${hatching ? (css.eggHatching ?? '') : ''}`}
-            onClick={hatchEgg}
+            onPointerDown={onPointerDown}
+            onPointerMove={onPointerMove}
+            onPointerUp={onEggPointerUp}
+            onPointerCancel={onPointerCancel}
+            onLostPointerCapture={onLostPointerCapture}
+            onClick={activateEgg}
             disabled={hatching}
             aria-label={hatching ? t('panel.hatching') : t('panel.adoptEggButton')}
           >
@@ -1839,7 +1917,7 @@ export function PetPanel({ t, useSessions }: PetPanelProps) {
         aria-label={pet.name}
         onPointerDown={onPointerDown}
         onPointerMove={onPointerMove}
-        onPointerUp={onPointerUp}
+        onPointerUp={onPetPointerUp}
         onPointerCancel={onPointerCancel}
         onLostPointerCapture={onLostPointerCapture}
       >
@@ -1922,6 +2000,8 @@ export function PetPanel({ t, useSessions }: PetPanelProps) {
             <section className={css.menuSection}>
               <div className={css.menuSectionTitle}>{t('panel.sectionPet')}</div>
               <div className={css.menuSectionBody}>
+                <button type="button" className={css.menuItem} onClick={collectEgg}>{t('panel.harvestEgg')}</button>
+                <div className={css.menuHint}>{t('panel.petDragHint')}</div>
                 <button type="button" className={css.menuItem} onClick={uploadAvatar}>{t('panel.avatar')}</button>
                 {pet.avatar !== undefined && (
                   <button type="button" className={css.menuItem} onClick={clearAvatar}>{t('panel.clearAvatar')}</button>
