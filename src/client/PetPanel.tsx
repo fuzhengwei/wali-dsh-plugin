@@ -102,6 +102,7 @@ interface StockSnapshot {
 
 const STORAGE_KEY = 'dsh-ui-pet:state'
 const PLACEMENT_KEY = 'dsh-ui-pet:placement'
+const APP_VERSION = '0.1.6'
 
 const TOKENS_PER_PERSONA = 1_000_000
 const MAX_TOKEN_SESSIONS = 80
@@ -831,7 +832,6 @@ export function PetPanel({ t, useSessions }: PetPanelProps) {
   const displayBackgroundRef = useRef<string | undefined>(undefined)
   // Drag bookkeeping: pointer origin, pet origin, and whether it became a drag.
   const drag = useRef<{ px: number; py: number; ox: number; oy: number; moved: boolean } | null>(null)
-  const suppressNextClick = useRef(false)
   const [photoNatural, setPhotoNatural] = useState<{ width: number; height: number } | null>(null)
   const [cardSize, setCardSize] = useState<{ width: number; height: number }>({ width: 0, height: 0 })
   const [roamerSize, setRoamerSize] = useState<{ width: number; height: number } | null>(null)
@@ -1416,54 +1416,51 @@ export function PetPanel({ t, useSessions }: PetPanelProps) {
   const finishDrag = useCallback(() => {
     const d = drag.current
     drag.current = null
-    if (d !== null) {
-      suppressNextClick.current = d.moved
-    }
     if (d !== null && d.moved) setFixed(true)
     setDragging(false)
+    return d !== null && d.moved
   }, [])
 
   const onEggPointerUp = useCallback((event: React.PointerEvent<HTMLButtonElement>) => {
     try { event.currentTarget.releasePointerCapture(event.pointerId) } catch { /* ignore */ }
-    finishDrag()
+    const dragged = finishDrag()
+    if (!dragged) hatchEgg()
   }, [finishDrag])
 
   const onPetPointerUp = useCallback((event: React.PointerEvent<HTMLButtonElement>) => {
     try { event.currentTarget.releasePointerCapture(event.pointerId) } catch { /* ignore */ }
-    finishDrag()
+    const dragged = finishDrag()
+    if (!dragged) {
+      setSessionsOpen(false)
+      setMenuOpen(open => !open)
+    }
   }, [finishDrag])
 
   const onPointerCancel = useCallback(() => {
     drag.current = null
-    suppressNextClick.current = false
     setDragging(false)
   }, [])
 
   const onLostPointerCapture = useCallback(() => {
     drag.current = null
-    suppressNextClick.current = false
     setDragging(false)
   }, [])
 
-  const activateEgg = useCallback(() => {
-    if (suppressNextClick.current) {
-      suppressNextClick.current = false
-      return
-    }
+  const onEggKeyDown = useCallback((event: React.KeyboardEvent<HTMLButtonElement>) => {
+    if (event.key !== 'Enter' && event.key !== ' ') return
+    event.preventDefault()
     hatchEgg()
   }, [hatchEgg])
 
-  const openMenuFromCard = useCallback((event: React.MouseEvent<HTMLDivElement>) => {
-    if (isInteractiveElement(event.target)) return
+  const onPetKeyDown = useCallback((event: React.KeyboardEvent<HTMLButtonElement>) => {
+    if (event.key !== 'Enter' && event.key !== ' ') return
+    event.preventDefault()
     setSessionsOpen(false)
     setMenuOpen(open => !open)
   }, [])
 
-  const openPetMenu = useCallback(() => {
-    if (suppressNextClick.current) {
-      suppressNextClick.current = false
-      return
-    }
+  const openMenuFromCard = useCallback((event: React.MouseEvent<HTMLDivElement>) => {
+    if (isInteractiveElement(event.target)) return
     setSessionsOpen(false)
     setMenuOpen(open => !open)
   }, [])
@@ -1796,7 +1793,7 @@ export function PetPanel({ t, useSessions }: PetPanelProps) {
             onPointerUp={onEggPointerUp}
             onPointerCancel={onPointerCancel}
             onLostPointerCapture={onLostPointerCapture}
-            onClick={activateEgg}
+            onKeyDown={onEggKeyDown}
             disabled={hatching}
             aria-label={hatching ? t('panel.hatching') : t('panel.adoptEggButton')}
           >
@@ -1919,12 +1916,12 @@ export function PetPanel({ t, useSessions }: PetPanelProps) {
           ['--accent2' as string]: persona.accent2,
         } as React.CSSProperties}
         aria-label={pet.name}
-        onClick={openPetMenu}
         onPointerDown={onPointerDown}
         onPointerMove={onPointerMove}
         onPointerUp={onPetPointerUp}
         onPointerCancel={onPointerCancel}
         onLostPointerCapture={onLostPointerCapture}
+        onKeyDown={onPetKeyDown}
       >
         {['mario', 'wukong', 'nezha', 'niudemon', 'redboy', 'tang', 'pikachu', 'baymax', 'minion', 'spongebob', 'simba', 'po', 'tom', 'jerry', 'mickey', 'donald', 'doraemon', 'goku', 'shinchan', 'conan'].includes(persona.shape) ? (
           <span className={css[`${persona.shape}Body`] as string} aria-hidden>
@@ -1976,7 +1973,10 @@ export function PetPanel({ t, useSessions }: PetPanelProps) {
 
       {menuOpen && (
         <div className={css.menu}>
-          <div className={css.menuName}>{pet.name} · {t('status.level', { level: pet.affinity })}</div>
+          <div className={css.menuHeader}>
+            <div className={css.menuName}>{pet.name} · {t('status.level', { level: pet.affinity })}</div>
+            <div className={css.menuVersion}>v{APP_VERSION}</div>
+          </div>
           <div className={css.menuGrid}>
             <section className={css.menuSection}>
               <div className={css.menuSectionTitle}>{t('panel.sectionTheme')}</div>

@@ -1,7 +1,7 @@
 {
   "name": "wali-dsh-plugin",
   "description": "Desktop pet surface: a free-roaming, conversation-aware pet that floats over the whole dsh web UI",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "type": "module",
   "main": "lib/index.js",
   "types": "lib/types/index.d.ts",
