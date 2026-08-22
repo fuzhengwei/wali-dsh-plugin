@@ -55,6 +55,8 @@ interface PetState {
   readonly themeKind?: PetThemeKind
   /** Optional stock-theme config; demo data is used until a live API is configured. */
   readonly stockTheme?: StockThemeConfig
+  /** Whether the pet is currently harvested into an egg. */
+  readonly eggMode?: boolean
 }
 
 interface PetPlacement {
@@ -102,7 +104,7 @@ interface StockSnapshot {
 
 const STORAGE_KEY = 'dsh-ui-pet:state'
 const PLACEMENT_KEY = 'dsh-ui-pet:placement'
-const APP_VERSION = '0.1.6'
+const APP_VERSION = '0.1.8'
 
 const TOKENS_PER_PERSONA = 1_000_000
 const MAX_TOKEN_SESSIONS = 80
@@ -142,7 +144,7 @@ const SESSIONS_ROAMER_SIZE = { width: 280, height: 360 }
 const UNADOPTED_ROAMER_SIZE = { width: 260, height: 220 }
 
 /** Pixels of pointer travel before a press counts as a drag (not a click). */
-const DRAG_THRESHOLD = 0
+const DRAG_THRESHOLD = 6
 
 /** Starting bond for a freshly adopted pet. */
 const AFFINITY_START = 60
@@ -745,6 +747,7 @@ function loadPet(_fallbackName: string): PetState | null {
       backgrounds: backgrounds.length > 0 ? backgrounds : legacyBackground,
       themeKind: sanitizeThemeKind(parsed.themeKind),
       stockTheme,
+      eggMode: parsed.eggMode === true,
     }
   } catch {
     return null
@@ -836,10 +839,12 @@ export function PetPanel({ t, useSessions }: PetPanelProps) {
   const [cardSize, setCardSize] = useState<{ width: number; height: number }>({ width: 0, height: 0 })
   const [roamerSize, setRoamerSize] = useState<{ width: number; height: number } | null>(null)
   const [backgroundIndex, setBackgroundIndex] = useState(0)
+  const isEggMode = pet?.eggMode === true
+  const visiblePet = pet !== null && !isEggMode ? pet : null
 
-  const backgrounds = pet?.backgrounds ?? []
-  const themeKind = pet?.themeKind ?? 'gallery'
-  const stockTheme = pet?.stockTheme ?? createDefaultStockTheme()
+  const backgrounds = visiblePet?.backgrounds ?? []
+  const themeKind = visiblePet?.themeKind ?? 'gallery'
+  const stockTheme = visiblePet?.stockTheme ?? createDefaultStockTheme()
   const stockSymbols = useMemo(() => parseStockSymbols(stockTheme.symbol), [stockTheme.symbol])
   const [stockSymbolIndex, setStockSymbolIndex] = useState(0)
   const activeStockSymbol = stockSymbols[stockSymbolIndex] ?? stockSymbols[0] ?? DEFAULT_STOCK_SYMBOL
@@ -851,7 +856,7 @@ export function PetPanel({ t, useSessions }: PetPanelProps) {
   const [stockSnapshot, setStockSnapshot] = useState<StockSnapshot | null>(null)
   const [stockLoading, setStockLoading] = useState(false)
   const [stockError, setStockError] = useState<string | null>(null)
-  const fallbackRoamerBounds = pet === null
+  const fallbackRoamerBounds = visiblePet === null
     ? UNADOPTED_ROAMER_SIZE
     : menuOpen
       ? MENU_ROAMER_SIZE
@@ -1112,9 +1117,9 @@ export function PetPanel({ t, useSessions }: PetPanelProps) {
 
   // Subscribe to the switchable session rows.
   useEffect(() => {
-    if (pet === null) return
+    if (visiblePet === null) return
     return subscribeSessionRows(setRows)
-  }, [pet])
+  }, [visiblePet])
 
   /** Speak a quip for the given scene as a transient bubble, using an explicit persona. */
   const speakFor = useCallback((personaId: PersonaId, scene: Scene) => {
@@ -1175,7 +1180,7 @@ export function PetPanel({ t, useSessions }: PetPanelProps) {
       if (peek?.running === true) armSlowTurnTimer()
       return
     }
-    if (pet === null) return
+    if (visiblePet === null) return
 
     const nextSessionId = peek === null ? null : String(peek.sessionId)
     if (trackedSessionId.current !== nextSessionId) {
@@ -1207,13 +1212,13 @@ export function PetPanel({ t, useSessions }: PetPanelProps) {
       else setPromptStage('crash')
     }
     wasRunning.current = running
-  }, [peek, pet, armSlowTurnTimer, clearSlowTurnTimer])
+  }, [peek, visiblePet, armSlowTurnTimer, clearSlowTurnTimer])
 
   // Proactively nudge the user after a stretch of silence (idle small-talk).
   // The timer resets on any activity, hover, or open menu; it fires only while
   // the pet is otherwise quiet, so it never talks over a live conversation.
   useEffect(() => {
-    if (pet === null) return
+    if (visiblePet === null) return
     const busy = peek?.running === true
     if (busy || hovered || menuOpen || excited) return
     const id = window.setTimeout(() => {
@@ -1221,13 +1226,13 @@ export function PetPanel({ t, useSessions }: PetPanelProps) {
       speak('idle')
     }, IDLE_PROMPT_MS)
     return () => window.clearTimeout(id)
-  }, [pet, peek?.running, activity, hovered, menuOpen, excited, speak])
+  }, [visiblePet, peek?.running, activity, hovered, menuOpen, excited, speak])
 
   // Late-night care: when the user is still working past 23:00 (or before 05:00),
   // gently remind them to rest. Fires at most once per calendar day, and never
   // while a conversation is live or the pet is otherwise busy.
   useEffect(() => {
-    if (pet === null) return
+    if (visiblePet === null) return
     const check = () => {
       const busy = peek?.running === true
       if (busy || hovered || menuOpen || excited) return
@@ -1242,12 +1247,12 @@ export function PetPanel({ t, useSessions }: PetPanelProps) {
     const id = window.setInterval(check, LATE_NIGHT_CHECK_MS)
     check()
     return () => window.clearInterval(id)
-  }, [pet, peek?.running, hovered, menuOpen, excited, speak])
+  }, [visiblePet, peek?.running, hovered, menuOpen, excited, speak])
 
   // Festival blessing: on the day of a known festival, greet the user once with
   // a themed blessing (shown regardless of persona dialect).
   useEffect(() => {
-    if (pet === null) return
+    if (visiblePet === null) return
     const greeting = pickFestivalGreeting()
     if (greeting === '') return
     const now = new Date()
@@ -1256,20 +1261,20 @@ export function PetPanel({ t, useSessions }: PetPanelProps) {
     festivalShown.current = today
     const id = window.setTimeout(() => { speakLine(greeting) }, 1_500)
     return () => window.clearTimeout(id)
-  }, [pet, speakLine])
+  }, [visiblePet, speakLine])
 
   // Bond grows when new conversations are opened.
   useEffect(() => {
-    if (pet === null) return
+    if (visiblePet === null) return
     if (sessionCount > lastSessionCount.current) {
       bumpAffinity((sessionCount - lastSessionCount.current) * AFFINITY_PER_SESSION)
     }
     lastSessionCount.current = sessionCount
-  }, [sessionCount, pet, bumpAffinity])
+  }, [sessionCount, visiblePet, bumpAffinity])
 
   // Bond tracks the live conversation: reward replies + token spend, punish failures.
   useEffect(() => {
-    if (pet === null || peek === null) return
+    if (visiblePet === null || peek === null) return
     const errored = peek.error !== null
     const wasErrored = lastErrored.current
     setPet(current => {
@@ -1293,14 +1298,14 @@ export function PetPanel({ t, useSessions }: PetPanelProps) {
       }
     })
     lastErrored.current = errored
-  }, [peek, pet])
+  }, [peek, visiblePet])
 
   // Whether the AI is actively working right now — drives walk gating + scene.
   const busy = peek !== null && peek.running
 
   // Free roaming, paused while hovered / menu open / dragging / AI busy.
   useEffect(() => {
-    if (pet === null) return
+    if (visiblePet === null) return
     if (fixed || hovered || menuOpen || sessionsOpen || busy || dragging) return
     const step = () => {
       setPos(prev => {
@@ -1322,7 +1327,7 @@ export function PetPanel({ t, useSessions }: PetPanelProps) {
       if (roamTimer.current !== null) clearInterval(roamTimer.current)
       roamTimer.current = null
     }
-  }, [pet, fixed, hovered, menuOpen, sessionsOpen, busy, dragging, roamerBounds])
+  }, [visiblePet, fixed, hovered, menuOpen, sessionsOpen, busy, dragging, roamerBounds])
 
   // Stop the walk cycle shortly after each move settles.
   useEffect(() => {
@@ -1378,7 +1383,13 @@ export function PetPanel({ t, useSessions }: PetPanelProps) {
   }, [roamerBounds])
 
   const hatchEgg = useCallback(() => {
-    if (hatching || pet !== null) return
+    if (hatching) return
+    if (pet !== null) {
+      if (pet.eggMode === true) {
+        setPet(current => (current === null ? current : { ...current, eggMode: false }))
+      }
+      return
+    }
     setHatching(true)
     if (hatchTimer.current !== null) clearTimeout(hatchTimer.current)
     hatchTimer.current = setTimeout(() => {
@@ -1393,6 +1404,10 @@ export function PetPanel({ t, useSessions }: PetPanelProps) {
         tokenCredit: 0,
         personaSwitchCount: 0,
         observedTokens: observedFromPeek(peek),
+        backgrounds: [],
+        themeKind: 'gallery',
+        stockTheme: createDefaultStockTheme(),
+        eggMode: false,
       })
       setHatching(false)
       speakFor(personaId, 'hello')
@@ -1401,7 +1416,7 @@ export function PetPanel({ t, useSessions }: PetPanelProps) {
   }, [hatching, peek, pet, speakFor, t])
 
   const collectEgg = useCallback(() => {
-    if (pet === null) return
+    if (visiblePet === null) return
     setMenuOpen(false)
     setSessionsOpen(false)
     setDragging(false)
@@ -1410,26 +1425,30 @@ export function PetPanel({ t, useSessions }: PetPanelProps) {
     setExcited(false)
     setCheer(null)
     setHatching(false)
-    setPet(null)
-  }, [pet])
+    setPet(current => (current === null ? current : { ...current, eggMode: true }))
+  }, [visiblePet])
 
-  const finishDrag = useCallback(() => {
+  const finishDrag = useCallback((clientX?: number, clientY?: number) => {
     const d = drag.current
     drag.current = null
-    if (d !== null && d.moved) setFixed(true)
+    const traveled = d !== null && clientX !== undefined && clientY !== undefined
+      ? Math.hypot(clientX - d.px, clientY - d.py)
+      : 0
+    const moved = d !== null && (d.moved || traveled >= DRAG_THRESHOLD)
+    if (moved) setFixed(true)
     setDragging(false)
-    return d !== null && d.moved
+    return moved
   }, [])
 
   const onEggPointerUp = useCallback((event: React.PointerEvent<HTMLButtonElement>) => {
     try { event.currentTarget.releasePointerCapture(event.pointerId) } catch { /* ignore */ }
-    const dragged = finishDrag()
+    const dragged = finishDrag(event.clientX, event.clientY)
     if (!dragged) hatchEgg()
   }, [finishDrag])
 
   const onPetPointerUp = useCallback((event: React.PointerEvent<HTMLButtonElement>) => {
     try { event.currentTarget.releasePointerCapture(event.pointerId) } catch { /* ignore */ }
-    const dragged = finishDrag()
+    const dragged = finishDrag(event.clientX, event.clientY)
     if (!dragged) {
       setSessionsOpen(false)
       setMenuOpen(open => !open)
@@ -1781,7 +1800,7 @@ export function PetPanel({ t, useSessions }: PetPanelProps) {
   } as React.CSSProperties
 
   // Not adopted yet: a single adoption egg that hatches into a random pet.
-  if (pet === null) {
+  if (visiblePet === null) {
     return (
       <div ref={roamerRef} className={css.roamer} style={{ left: pos.x, top: pos.y }}>
         <div className={css.adopt}>
